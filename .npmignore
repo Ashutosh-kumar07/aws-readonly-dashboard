@@ -1,0 +1,17 @@
+# The "files" field in package.json is authoritative; this is a defence in depth
+# list so development artefacts can never end up in the published tarball.
+src/
+tests/
+scripts/
+coverage/
+.github/
+*.tgz
+tsconfig*.json
+eslint.config.js
+vitest.config.ts
+.prettierrc.json
+.prettierignore
+CONTRIBUTING.md
+CODE_OF_CONDUCT.md
+PUBLISHING.md
+.editorconfig

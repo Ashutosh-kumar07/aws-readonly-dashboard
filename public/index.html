@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
+    <meta
+      name="description"
+      content="Local read-only AWS cost, security and optimisation dashboard."
+    />
+    <title>AWS Read-Only Dashboard</title>
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ctext y='26' font-size='26'%3E%F0%9F%9B%A1%EF%B8%8F%3C/text%3E%3C/svg%3E"
+    />
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to main content</a>
+
+    <header class="topbar">
+      <div class="topbar__brand">
+        <span class="topbar__logo" aria-hidden="true">🛡️</span>
+        <div>
+          <h1 class="topbar__title">AWS Read-Only Dashboard</h1>
+          <p class="topbar__subtitle" id="server-subtitle">Starting…</p>
+        </div>
+      </div>
+
+      <div class="topbar__controls">
+        <button
+          class="chip chip--button"
+          id="profile-trigger"
+          aria-haspopup="dialog"
+          aria-expanded="false"
+        >
+          <span class="chip__label">Profiles</span>
+          <span class="chip__value" id="profile-summary">none selected</span>
+        </button>
+
+        <button
+          class="chip chip--button"
+          id="region-trigger"
+          aria-haspopup="dialog"
+          aria-expanded="false"
+        >
+          <span class="chip__label">Regions</span>
+          <span class="chip__value" id="region-summary">us-east-1</span>
+        </button>
+
+        <button class="chip chip--button" id="ai-status-chip" title="AI provider status">
+          <span class="chip__label">AI</span>
+          <span class="chip__value" id="ai-status-value">checking…</span>
+        </button>
+
+        <button
+          class="chip chip--button chip--counter"
+          id="api-counter"
+          title="Show AWS API usage detail"
+        >
+          <span class="chip__label">AWS API Calls</span>
+          <span class="chip__value" id="api-counter-value">0</span>
+        </button>
+
+        <button class="button button--primary" id="refresh-all">Refresh All</button>
+      </div>
+    </header>
+
+    <div class="layout">
+      <nav class="sidebar" aria-label="Dashboard sections">
+        <ul class="nav" id="nav">
+          <li>
+            <button class="nav__item" data-view="overview" aria-current="page">Overview</button>
+          </li>
+          <li><button class="nav__item" data-view="billing">Billing / Cost</button></li>
+          <li><button class="nav__item" data-view="security">Security</button></li>
+          <li><button class="nav__item" data-view="optimizer">Compute Optimizer</button></li>
+          <li><button class="nav__item" data-view="cloudwatch">CloudWatch</button></li>
+          <li><button class="nav__item" data-view="cloudtrail">CloudTrail</button></li>
+          <li><button class="nav__item" data-view="ai">AI Insights</button></li>
+          <li><button class="nav__item" data-view="usage">AWS API Usage</button></li>
+          <li><button class="nav__item" data-view="settings">Settings</button></li>
+        </ul>
+
+        <div class="sidebar__footer">
+          <p
+            class="readonly-badge"
+            title="Every AWS call is checked against a read-only allowlist before it is sent."
+          >
+            <span aria-hidden="true">🔒</span> Read-only enforced
+          </p>
+          <p class="sidebar__version" id="version-label"></p>
+        </div>
+      </nav>
+
+      <main class="main" id="main" tabindex="-1">
+        <div id="view-root" class="view-root"></div>
+      </main>
+    </div>
+
+    <dialog class="dialog" id="profile-dialog" aria-labelledby="profile-dialog-title">
+      <form method="dialog" class="dialog__form">
+        <h2 id="profile-dialog-title">AWS profiles</h2>
+        <p class="dialog__hint">
+          Discovered from your local AWS configuration. Selecting a profile validates it with a
+          single
+          <code>sts:GetCallerIdentity</code> call. Select several to compare accounts side by side.
+        </p>
+        <div
+          class="dialog__body"
+          id="profile-list"
+          role="group"
+          aria-label="Available AWS profiles"
+        ></div>
+        <div class="dialog__actions">
+          <button class="button" value="cancel">Close</button>
+          <button class="button button--primary" id="profile-apply" value="apply">Apply</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog class="dialog" id="region-dialog" aria-labelledby="region-dialog-title">
+      <form method="dialog" class="dialog__form">
+        <h2 id="region-dialog-title">AWS regions</h2>
+        <p class="dialog__hint">
+          Regional services are queried in the regions you select. Global resources (IAM, the S3
+          bucket inventory, Cost Explorer and Trusted Advisor) are always included separately and
+          are labelled
+          <strong>global</strong>.
+        </p>
+        <div class="dialog__toolbar">
+          <button class="button button--small" id="region-select-all" type="button">
+            Select all
+          </button>
+          <button class="button button--small" id="region-clear-all" type="button">
+            Clear all
+          </button>
+          <input
+            class="input input--search"
+            id="region-filter"
+            type="search"
+            placeholder="Filter regions"
+            aria-label="Filter regions"
+          />
+        </div>
+        <div
+          class="dialog__body dialog__body--grid"
+          id="region-list"
+          role="group"
+          aria-label="Available AWS regions"
+        ></div>
+        <div class="dialog__actions">
+          <button class="button" value="cancel">Close</button>
+          <button class="button button--primary" id="region-apply" value="apply">Apply</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog class="dialog dialog--wide" id="detail-dialog" aria-labelledby="detail-dialog-title">
+      <form method="dialog" class="dialog__form">
+        <h2 id="detail-dialog-title">Details</h2>
+        <div class="dialog__body" id="detail-body"></div>
+        <div class="dialog__actions">
+          <button class="button button--primary" value="close">Close</button>
+        </div>
+      </form>
+    </dialog>
+
+    <div class="toasts" id="toasts" aria-live="polite" aria-atomic="false"></div>
+
+    <script type="module" src="/js/app.js"></script>
+  </body>
+</html>
