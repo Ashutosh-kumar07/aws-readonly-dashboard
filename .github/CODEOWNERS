@@ -1,0 +1,24 @@
+# Code owners for aws-readonly-dashboard.
+#
+# Every pull request automatically requests a review from the owners listed
+# here. Paired with the "Require review from Code Owners" branch rule on main,
+# nothing reaches the default branch without an explicit approval from an owner.
+#
+# Syntax: <path pattern>  <owner>
+# Later matching rules win, so the catch-all comes first.
+
+*                        @Ashutosh-kumar07
+
+# The paths below already match the catch-all. They are repeated so that the
+# code that carries this project's guarantees can never be left unowned by a
+# future edit to the rules above:
+#
+#   src/aws/            the read-only enforcement layer and operation allowlist
+#   src/ai/sanitizer.ts the PII sanitization pipeline
+#   .github/workflows/  the CI gates and the npm release path
+#   package.json        the published package contents and the release version
+
+/src/aws/                @Ashutosh-kumar07
+/src/ai/sanitizer.ts     @Ashutosh-kumar07
+/.github/workflows/      @Ashutosh-kumar07
+/package.json            @Ashutosh-kumar07

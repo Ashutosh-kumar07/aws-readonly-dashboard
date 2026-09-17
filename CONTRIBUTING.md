@@ -93,6 +93,17 @@ tests stay hermetic. Tests must never make a real AWS, network or AI call.
   you checked and how.
 - New behaviour needs new tests.
 
+## Review requirements
+
+`main` is protected. Every change reaches it through a pull request that must:
+
+- pass CI (lint, formatting, type check, the full test suite and the packaging
+  checks, on Node 18.17, 20 and 22), and
+- carry an approving review from a code owner (see `.github/CODEOWNERS`).
+
+Pull requests from forks do not run workflows until a maintainer approves the
+run, so a first-time contributor should expect a short wait before CI reports.
+
 ## Reporting bugs
 
 Open an issue with your OS and Node version, the package version, the exact command
