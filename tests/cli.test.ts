@@ -5,9 +5,11 @@ import { describe, expect, it } from 'vitest';
 import { parseArgs, HELP_TEXT } from '../src/cli.js';
 
 describe('CLI options', () => {
-  it('defaults to opening a browser and no overrides', () => {
+  it('leaves the browser preference unset when no flag is given', () => {
+    // Unset means the saved "Open a browser on startup" preference decides.
     const options = parseArgs([]);
-    expect(options).toEqual({ open: true, help: false, version: false });
+    expect(options).toEqual({ help: false, version: false });
+    expect(options.open).toBeUndefined();
   });
 
   it('parses the port', () => {

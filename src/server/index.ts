@@ -13,6 +13,7 @@ import { fileURLToPath } from 'node:url';
 import { AwsAccessLayer } from '../aws/access-layer.js';
 import type { ApiCategory } from '../aws/allowlist.js';
 import { ConfigService } from '../config/config-service.js';
+import type { AppConfig } from '../config/schema.js';
 import { ensureDir } from '../config/json-store.js';
 import { AiHistoryStore } from '../ai/history.js';
 import { AiOrchestrator, type AiStatus } from '../ai/orchestrator.js';
@@ -50,6 +51,8 @@ export interface StartServerOptions {
 
 export interface StartedServer {
   server: Server;
+  /** The effective configuration this session started with. */
+  config: AppConfig;
   url: string;
   port: number;
   host: string;
@@ -172,6 +175,7 @@ export async function startServer(options: StartServerOptions = {}): Promise<Sta
 
   return {
     server,
+    config,
     url,
     port: portSelection.port,
     host,

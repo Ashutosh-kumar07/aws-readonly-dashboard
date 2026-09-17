@@ -284,6 +284,13 @@ describe('local data deletion', () => {
   });
 });
 
+describe('startup configuration', () => {
+  it('exposes the effective configuration, so the CLI can honour saved preferences', () => {
+    expect(server.config.ui.autoOpenBrowser).toBe(true);
+    expect(server.config.billing.comparisonDays).toBe(7);
+  });
+});
+
 describe('browser launch', () => {
   it('refuses to open a non-local URL', () => {
     expect(openBrowser('https://example.com')).toBe(false);

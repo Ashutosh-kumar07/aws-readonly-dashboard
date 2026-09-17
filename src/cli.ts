@@ -18,7 +18,8 @@ export interface CliOptions {
   host?: string;
   profile?: string;
   regions?: string[];
-  open: boolean;
+  /** Undefined means "not specified"; the saved UI preference then decides. */
+  open?: boolean;
   configDir?: string;
   logLevel?: LogLevel;
   help: boolean;
@@ -42,7 +43,8 @@ Options:
                            non-loopback address exposes the dashboard on your network.
       --profile <name>     Pre-select an AWS profile for this session.
       --region <list>      Pre-select regions for this session (comma separated).
-      --no-open            Do not open a browser automatically.
+      --no-open            Do not open a browser automatically. Without this flag the
+                           saved "Open a browser on startup" preference is used.
       --config-dir <path>  Directory for local configuration
                            (default: ~/.aws-readonly-dashboard).
       --log-level <level>  debug | info | warn | error | silent (default: info).
@@ -56,7 +58,7 @@ Examples:
 `;
 
 export function parseArgs(argv: readonly string[]): CliOptions {
-  const options: CliOptions = { open: true, help: false, version: false };
+  const options: CliOptions = { help: false, version: false };
 
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index] as string;
@@ -183,7 +185,8 @@ export async function run(argv: readonly string[] = process.argv.slice(2)): Prom
     );
   }
 
-  if (options.open) {
+  // An explicit --open/--no-open wins; otherwise the saved UI preference decides.
+  if (options.open ?? started.config.ui.autoOpenBrowser) {
     openBrowser(started.url);
   }
 
