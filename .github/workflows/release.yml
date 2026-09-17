@@ -55,13 +55,20 @@ jobs:
       - name: Inspect the package contents
         run: npm pack --dry-run
 
-      # --provenance requires a public repository and the id-token permission
-      # above. On a private repository, drop the flag.
-      - name: Publish
+      # npm provenance attestations require a public source repository, so the
+      # flag is only passed when the repository actually is public.
+      - name: Publish with provenance
+        if: ${{ !github.event.repository.private }}
         run: npm publish --provenance --access public --tag "${{ inputs.dist_tag || 'latest' }}"
         env:
           # Prefer trusted publishing (OIDC). NPM_TOKEN is only a fallback for
           # repositories that have not configured a trusted publisher yet.
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Publish (private repository, provenance unavailable)
+        if: ${{ github.event.repository.private }}
+        run: npm publish --access public --tag "${{ inputs.dist_tag || 'latest' }}"
+        env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Verify the published version

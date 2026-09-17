@@ -20,6 +20,14 @@ Trusted publishing is the only route with no long-lived credential to leak or
 rotate, and it attaches a verifiable provenance attestation to the release. It
 requires a public repository.
 
+**Repository visibility matters.** npm provenance attestations link a published
+version to public source, so they cannot be produced from a private repository.
+The release workflow detects this and publishes without the flag rather than
+failing — but a package whose `repository` field points at a private repo gives
+users a 404 where the source should be, which defeats the point of an auditable
+read-only tool. Make the repository public before, or soon after, the first
+release.
+
 Whichever route you pick, **never paste an npm token into a chat, an issue, a pull
 request, a commit or this file**. A token that has been shared anywhere should be
 revoked at <https://www.npmjs.com/settings/~/tokens> and replaced.
