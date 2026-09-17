@@ -21,7 +21,9 @@ jobs:
   publish:
     name: Verify and publish to npm
     runs-on: ubuntu-latest
-    environment: npm-publish
+    # Optional: create a GitHub environment named `npm-publish` with required
+    # reviewers and add `environment: npm-publish` here to gate releases behind
+    # a manual approval. It is left out so a first release works with no setup.
     permissions:
       contents: read
       # Required for npm trusted publishing (OIDC provenance).
@@ -53,6 +55,8 @@ jobs:
       - name: Inspect the package contents
         run: npm pack --dry-run
 
+      # --provenance requires a public repository and the id-token permission
+      # above. On a private repository, drop the flag.
       - name: Publish
         run: npm publish --provenance --access public --tag "${{ inputs.dist_tag || 'latest' }}"
         env:

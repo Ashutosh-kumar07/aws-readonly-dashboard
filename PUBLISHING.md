@@ -6,6 +6,24 @@ This document describes the complete release process for `aws-readonly-dashboard
 > issue, a pull request or documentation. Use trusted publishing (OIDC) from GitHub
 > Actions, or a local interactive `npm publish` with 2FA.
 
+## Choosing how to publish
+
+Three routes, in order of preference:
+
+| Route | Where the credential lives | Who runs the publish |
+| --- | --- | --- |
+| **Trusted publishing (OIDC)** | Nowhere — npm trusts the workflow itself | GitHub Actions, on a `v*` tag |
+| **`NPM_TOKEN` repository secret** | GitHub Actions secrets | GitHub Actions, on a `v*` tag |
+| **Local `npm publish`** | Your machine's `~/.npmrc` | You, interactively |
+
+Trusted publishing is the only route with no long-lived credential to leak or
+rotate, and it attaches a verifiable provenance attestation to the release. It
+requires a public repository.
+
+Whichever route you pick, **never paste an npm token into a chat, an issue, a pull
+request, a commit or this file**. A token that has been shared anywhere should be
+revoked at <https://www.npmjs.com/settings/~/tokens> and replaced.
+
 ## Prerequisites
 
 - An npm account with publish rights to the package
@@ -157,7 +175,11 @@ The repository ships two workflows:
 
 ### Trusted publishing (recommended)
 
-Prefer npm's trusted publishing (OIDC) over storing a long-lived token:
+Prefer npm's trusted publishing (OIDC) over storing a long-lived token.
+
+For a **first** release the package does not exist on npm yet, so there is nothing
+to configure trusted publishing against. Publish `1.0.0` once from your machine
+(`npm publish`), then set up trusted publishing for every release after it:
 
 1. On npmjs.com, open the package → **Settings → Trusted publishing**.
 2. Add this GitHub repository and the `release.yml` workflow as a trusted publisher.
