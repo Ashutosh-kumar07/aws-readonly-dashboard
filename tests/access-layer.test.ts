@@ -96,6 +96,30 @@ describe('API call accounting', () => {
     expect(attempts).toBe(1);
   });
 
+  it('separates expected "not found" answers from real failures', async () => {
+    const client = new FakeClient({
+      GetPolicy: awsError('ResourceNotFoundException', 'no policy', 404),
+      ListFunctions: awsError('AccessDeniedException', 'denied', 403),
+    });
+    const layer = new AwsAccessLayer({ clientFactory: () => client as never, maxRetries: 0 });
+    const guarded = layer.client('lambda', class {} as never, {
+      profile: 'dev',
+      region: 'us-east-1',
+    });
+
+    await expect(guarded.send(makeCommand('GetPolicy'), { section: 'security' })).rejects.toThrow();
+    await expect(
+      guarded.send(makeCommand('ListFunctions'), { section: 'security' })
+    ).rejects.toThrow();
+
+    const snapshot = layer.tracker.snapshot();
+    expect(snapshot.failedCalls).toBe(2);
+    // "This function has no resource policy" is an answer, not a problem.
+    expect(snapshot.expectedNotFoundCalls).toBe(1);
+    expect(snapshot.categories[0]?.expectedNotFound).toBe(1);
+    expect(snapshot.recentCalls[0]?.errorKind).toBeDefined();
+  });
+
   it('bounds the stored record list while keeping the running totals', () => {
     const tracker = new ApiCallTracker(10);
     for (let index = 0; index < 50; index += 1) {

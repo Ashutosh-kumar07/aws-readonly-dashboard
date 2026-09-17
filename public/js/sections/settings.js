@@ -530,6 +530,81 @@ function historyCard(state, actions) {
   );
 }
 
+function scanLimitsCard(state, actions) {
+  const security = state.config?.security ?? {};
+  return card(
+    'Security scan limits',
+    'These bound how many resources a scan inspects, which directly bounds how many AWS API calls it makes. Anything not inspected is reported as partially evaluated — never as clean.',
+    [
+      el('div', { class: 'filters' }, [
+        el('div', { class: 'field' }, [
+          el('label', { for: 'limit-lambda', text: 'Lambda policy lookups per region' }),
+          el('input', {
+            class: 'input',
+            id: 'limit-lambda',
+            type: 'number',
+            min: '0',
+            max: '10000',
+            step: '25',
+            value: String(security.maxLambdaPolicyLookupsPerRegion ?? 100),
+            onChange: async (event) => {
+              await actions.persist({
+                security: { maxLambdaPolicyLookupsPerRegion: Number(event.target.value) },
+              });
+              await actions.loadSection('security', { force: true });
+            },
+          }),
+          el('p', {
+            class: 'subtle',
+            text: 'One lambda:GetPolicy call per function. 0 disables the public-policy check. The "outside a VPC" check always covers every function.',
+          }),
+        ]),
+        el('div', { class: 'field' }, [
+          el('label', { for: 'limit-buckets', text: 'S3 buckets per scan' }),
+          el('input', {
+            class: 'input',
+            id: 'limit-buckets',
+            type: 'number',
+            min: '1',
+            max: '10000',
+            step: '25',
+            value: String(security.maxBucketsPerScan ?? 250),
+            onChange: async (event) => {
+              await actions.persist({
+                security: { maxBucketsPerScan: Number(event.target.value) },
+              });
+              await actions.loadSection('security', { force: true });
+            },
+          }),
+          el('p', { class: 'subtle', text: 'Up to five read calls per bucket.' }),
+        ]),
+        el('div', { class: 'field' }, [
+          el('label', { for: 'limit-loggroups', text: 'Log groups per region' }),
+          el('input', {
+            class: 'input',
+            id: 'limit-loggroups',
+            type: 'number',
+            min: '1',
+            max: '5000',
+            step: '25',
+            value: String(state.config?.cloudwatch?.maxLogGroupsPerRegion ?? 200),
+            onChange: async (event) => {
+              await actions.persist({
+                cloudwatch: { maxLogGroupsPerRegion: Number(event.target.value) },
+              });
+              await actions.loadSection('cloudwatch', { force: true });
+            },
+          }),
+          el('p', {
+            class: 'subtle',
+            text: 'Largest log groups first. Growth metrics are batched 100 per call.',
+          }),
+        ]),
+      ]),
+    ]
+  );
+}
+
 function readOnlyCard() {
   return card(
     'AWS read-only guarantee',
@@ -667,6 +742,7 @@ export function renderSettings({ state, actions }) {
   container.append(customProviderCard(state, actions));
   container.append(sanitizationCard(state, actions));
   container.append(historyCard(state, actions));
+  container.append(scanLimitsCard(state, actions));
   container.append(readOnlyCard());
   container.append(memoryCard(state));
   container.append(localDataCard(state, actions));

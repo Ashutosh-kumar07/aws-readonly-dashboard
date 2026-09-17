@@ -19,7 +19,8 @@ First public release.
 - Deep-frozen allowlist that no configuration, environment variable or UI action can
   widen; configuration can only narrow which categories are called.
 - Session-scoped AWS API call tracker integrated into the same choke point, with a
-  UI breakdown by category, operation, profile, account, region and triggering action.
+  UI breakdown by category, operation, profile, account, region and triggering action,
+  separating expected "not found" answers from genuine failures.
 
 **Credentials and scope**
 
@@ -46,6 +47,9 @@ First public release.
   that are no longer detected.
 - Explicit "unable to evaluate" reporting, including the missing IAM action where
   AWS provides it — a failed check is never reported as a pass.
+- Explicit "partially evaluated" reporting when a scan limit stops a check from
+  inspecting the whole inventory, with configurable limits for Lambda policy
+  lookups, S3 buckets and CloudWatch log groups.
 - Compute Optimizer recommendations for EC2, Auto Scaling groups, EBS, Lambda, ECS,
   RDS and idle resources, using only AWS-provided estimates.
 - CloudWatch log-group analysis: largest groups, rapid growth measured from the

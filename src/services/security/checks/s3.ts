@@ -36,7 +36,8 @@ import type { EvaluationIssue } from '../../types.js';
 
 const CHECK_ID = 's3-public-access';
 const ACCOUNT_CHECK_ID = 's3-account-public-access-block';
-const MAX_BUCKETS = 250;
+/** Default bucket cap, overridden by `security.maxBucketsPerScan`. */
+const DEFAULT_MAX_BUCKETS = 250;
 
 const ALL_USERS_URI = 'http://acs.amazonaws.com/groups/global/AllUsers';
 const AUTHENTICATED_USERS_URI = 'http://acs.amazonaws.com/groups/global/AuthenticatedUsers';
@@ -196,7 +197,10 @@ export const s3PublicAccessCheck: SecurityCheck = {
       ]);
     }
 
-    const inspected = bucketNames.slice(0, MAX_BUCKETS);
+    const inspected = bucketNames.slice(
+      0,
+      context.config.security.maxBucketsPerScan ?? DEFAULT_MAX_BUCKETS
+    );
     const issues: EvaluationIssue[] = [];
     const findings: CheckResult['findings'] = [];
     const deniedPermissions = new Set<string>();
@@ -406,12 +410,28 @@ export const s3PublicAccessCheck: SecurityCheck = {
       }
     });
 
+    const truncated = bucketNames.length > inspected.length;
+    if (truncated) {
+      issues.push({
+        profile: context.profile,
+        ...(context.accountId ? { accountId: context.accountId } : {}),
+        region: GLOBAL_SCOPE,
+        service: 'S3',
+        check: CHECK_ID,
+        kind: 'unknown',
+        label: `Partially evaluated — ${inspected.length} of ${bucketNames.length} buckets inspected`,
+        message:
+          `${bucketNames.length - inspected.length} bucket(s) were not examined, because the scan limit was reached. ` +
+          'Raise "S3 buckets per scan" in Settings to cover them, at the cost of more AWS API calls.',
+      });
+    }
+
     return {
       findings,
       issues,
       evaluated: true,
       resourcesEvaluated: inspected.length,
-      truncated: bucketNames.length > inspected.length,
+      truncated,
     };
   },
 };

@@ -112,6 +112,18 @@ export interface SecurityConfig {
   /** Check identifiers the user switched off. */
   disabledChecks: string[];
   severityFilter: Array<'critical' | 'high' | 'medium' | 'low'>;
+  /**
+   * How many Lambda functions per region the resource-policy check may inspect.
+   * Each function costs one `lambda:GetPolicy` call, so this trades AWS API
+   * volume against coverage. 0 disables the per-function policy check entirely;
+   * the VPC check always covers every function regardless.
+   */
+  maxLambdaPolicyLookupsPerRegion: number;
+  /**
+   * How many S3 buckets a scan may inspect. Each bucket costs up to five
+   * read calls.
+   */
+  maxBucketsPerScan: number;
 }
 
 export interface UiConfig {
@@ -249,6 +261,8 @@ export function defaultConfig(): AppConfig {
     security: {
       disabledChecks: [],
       severityFilter: ['critical', 'high', 'medium', 'low'],
+      maxLambdaPolicyLookupsPerRegion: 100,
+      maxBucketsPerScan: 250,
     },
     ai: {
       provider: 'gemini',
@@ -479,6 +493,18 @@ export function normaliseConfig(raw: unknown): AppConfig {
         (asStringArray(input.security?.severityFilter)?.filter((value) =>
           ['critical', 'high', 'medium', 'low'].includes(value)
         ) as SecurityConfig['severityFilter']) ?? base.security.severityFilter,
+      maxLambdaPolicyLookupsPerRegion: clamp(
+        input.security?.maxLambdaPolicyLookupsPerRegion,
+        0,
+        10_000,
+        base.security.maxLambdaPolicyLookupsPerRegion
+      ),
+      maxBucketsPerScan: clamp(
+        input.security?.maxBucketsPerScan,
+        1,
+        10_000,
+        base.security.maxBucketsPerScan
+      ),
     },
     ai: {
       provider,

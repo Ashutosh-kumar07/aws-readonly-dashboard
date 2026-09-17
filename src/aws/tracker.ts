@@ -9,6 +9,7 @@
  * server restarts, which matches the "no persistent AWS data" rule.
  */
 
+import type { AwsErrorKind } from '../util/errors.js';
 import { API_CATEGORY_LABELS, type ApiCategory } from './allowlist.js';
 
 export interface ApiCallRecord {
@@ -27,6 +28,12 @@ export interface ApiCallRecord {
   status: 'success' | 'error';
   durationMs: number;
   errorCode?: string;
+  /**
+   * Classified failure reason. `not-found` is an ordinary, expected answer for
+   * several AWS APIs (a bucket with no policy, a function with no resource
+   * policy), so the UI separates it from failures that need attention.
+   */
+  errorKind?: AwsErrorKind;
 }
 
 export interface CategoryUsage {
@@ -35,6 +42,8 @@ export interface CategoryUsage {
   calls: number;
   successes: number;
   errors: number;
+  /** Errors that are an expected answer rather than a problem. */
+  expectedNotFound: number;
   operations: Array<{ operation: string; service: string; calls: number; errors: number }>;
 }
 
@@ -42,6 +51,8 @@ export interface ApiUsageSnapshot {
   totalCalls: number;
   successfulCalls: number;
   failedCalls: number;
+  /** Subset of `failedCalls` that are expected "not found" answers. */
+  expectedNotFoundCalls: number;
   sessionStartedAt: string;
   categories: CategoryUsage[];
   /** Most recent calls, newest first. Bounded by `maxRecords`. */
@@ -62,11 +73,18 @@ export class ApiCallTracker {
   private total = 0;
   private successes = 0;
   private failures = 0;
+  private expectedNotFound = 0;
   private readonly startedAt = new Date().toISOString();
   private readonly records: ApiCallRecord[] = [];
   private readonly byCategory = new Map<
     ApiCategory,
-    { calls: number; successes: number; errors: number; operations: Map<string, OperationCounter> }
+    {
+      calls: number;
+      successes: number;
+      errors: number;
+      expectedNotFound: number;
+      operations: Map<string, OperationCounter>;
+    }
   >();
 
   constructor(private readonly maxRecords = 5000) {}
@@ -79,18 +97,26 @@ export class ApiCallTracker {
       categoryLabel: API_CATEGORY_LABELS[entry.category] ?? entry.category,
     };
 
+    const expected = record.status === 'error' && record.errorKind === 'not-found';
+
     this.total += 1;
     if (record.status === 'success') this.successes += 1;
-    else this.failures += 1;
+    else {
+      this.failures += 1;
+      if (expected) this.expectedNotFound += 1;
+    }
 
     let bucket = this.byCategory.get(record.category);
     if (!bucket) {
-      bucket = { calls: 0, successes: 0, errors: 0, operations: new Map() };
+      bucket = { calls: 0, successes: 0, errors: 0, expectedNotFound: 0, operations: new Map() };
       this.byCategory.set(record.category, bucket);
     }
     bucket.calls += 1;
     if (record.status === 'success') bucket.successes += 1;
-    else bucket.errors += 1;
+    else {
+      bucket.errors += 1;
+      if (expected) bucket.expectedNotFound += 1;
+    }
 
     const opKey = `${record.service}:${record.operation}`;
     const counter = bucket.operations.get(opKey) ?? {
@@ -121,6 +147,7 @@ export class ApiCallTracker {
         calls: bucket.calls,
         successes: bucket.successes,
         errors: bucket.errors,
+        expectedNotFound: bucket.expectedNotFound,
         operations: [...bucket.operations.values()].sort((a, b) => b.calls - a.calls),
       }))
       .sort((a, b) => b.calls - a.calls);
@@ -129,6 +156,7 @@ export class ApiCallTracker {
       totalCalls: this.total,
       successfulCalls: this.successes,
       failedCalls: this.failures,
+      expectedNotFoundCalls: this.expectedNotFound,
       sessionStartedAt: this.startedAt,
       categories,
       recentCalls: this.records.slice(-recentLimit).reverse(),
@@ -142,6 +170,7 @@ export class ApiCallTracker {
     this.total = 0;
     this.successes = 0;
     this.failures = 0;
+    this.expectedNotFound = 0;
     this.records.length = 0;
     this.byCategory.clear();
     this.nextId = 1;

@@ -4,6 +4,25 @@ import { el, money, number } from './ui.js';
 
 const NS = 'http://www.w3.org/2000/svg';
 
+/**
+ * Indices to label on an axis: roughly eight evenly spaced ticks, always
+ * including the last point, and never two labels close enough to overlap.
+ */
+export function labelIndices(count) {
+  if (count === 0) return [];
+  if (count <= 8) return Array.from({ length: count }, (_, index) => index);
+  const step = Math.ceil(count / 8);
+  const indices = [];
+  for (let index = 0; index < count; index += step) indices.push(index);
+  const last = count - 1;
+  if (indices[indices.length - 1] !== last) {
+    // Drop the previous tick if the final one would sit on top of it.
+    if (last - indices[indices.length - 1] < step) indices.pop();
+    indices.push(last);
+  }
+  return indices;
+}
+
 function svgEl(tag, attrs = {}) {
   const node = document.createElementNS(NS, tag);
   for (const [key, value] of Object.entries(attrs)) {
@@ -48,7 +67,10 @@ export function barChart(points, options = {}) {
       height: barHeight,
       rx: Math.min(2, barWidth / 3),
     });
-    rect.append(svgEl('title')).textContent = point.title ?? `${point.label}: ${point.value}`;
+    // Node.append() returns undefined, so the title element is built first.
+    const title = svgEl('title');
+    title.textContent = point.title ?? `${point.label}: ${point.value}`;
+    rect.append(title);
     svg.append(rect);
   });
 
@@ -62,9 +84,8 @@ export function barChart(points, options = {}) {
     })
   );
 
-  const labelEvery = Math.ceil(points.length / 8);
-  points.forEach((point, index) => {
-    if (index % labelEvery !== 0 && index !== points.length - 1) return;
+  for (const index of labelIndices(points.length)) {
+    const point = points[index];
     const text = svgEl('text', {
       class: 'chart__label',
       x: padding.left + index * slot + slot / 2,
@@ -73,7 +94,7 @@ export function barChart(points, options = {}) {
     });
     text.textContent = point.label;
     svg.append(text);
-  });
+  }
 
   return svg;
 }
@@ -127,22 +148,22 @@ export function lineChart(points, options = {}) {
       r: 6,
       fill: 'transparent',
     });
-    circle.append(svgEl('title')).textContent = point.title ?? `${point.label}: ${point.value}`;
+    const title = svgEl('title');
+    title.textContent = point.title ?? `${point.label}: ${point.value}`;
+    circle.append(title);
     svg.append(circle);
   });
 
-  const labelEvery = Math.ceil(points.length / 8);
-  points.forEach((point, index) => {
-    if (index % labelEvery !== 0 && index !== points.length - 1) return;
+  for (const index of labelIndices(points.length)) {
     const text = svgEl('text', {
       class: 'chart__label',
       x: coords[index].x,
       y: height - 6,
       'text-anchor': index === 0 ? 'start' : index === points.length - 1 ? 'end' : 'middle',
     });
-    text.textContent = point.label;
+    text.textContent = points[index].label;
     svg.append(text);
-  });
+  }
 
   return svg;
 }

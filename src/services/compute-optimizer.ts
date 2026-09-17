@@ -80,9 +80,28 @@ function savings(opportunity: SavingsOpportunity | undefined): {
   };
 }
 
-function idFromArn(arn: string | undefined, fallback: string): string {
+/**
+ * Derives a readable resource id from an ARN.
+ *
+ * Lambda ARNs carry a version qualifier (`…:function:name:$LATEST`) and RDS
+ * ARNs use `:db:name`, so the last colon-separated segment is not always the
+ * resource name. Known `type:name` tails are handled explicitly.
+ */
+export function idFromArn(arn: string | undefined, fallback: string): string {
   if (!arn) return fallback;
-  const tail = arn.split(':').pop() ?? arn;
+  const segments = arn.split(':');
+
+  const functionIndex = segments.indexOf('function');
+  if (functionIndex !== -1 && segments[functionIndex + 1]) {
+    return segments[functionIndex + 1] as string;
+  }
+
+  const tail = segments[segments.length - 1] ?? arn;
+  // A version qualifier leaves the name in the preceding segment.
+  if (/^(\$LATEST|\d+)$/.test(tail) && segments.length > 1) {
+    const previous = segments[segments.length - 2] as string;
+    return previous.split('/').pop() ?? previous;
+  }
   return tail.split('/').pop() ?? tail;
 }
 

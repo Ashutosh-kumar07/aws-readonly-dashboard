@@ -263,6 +263,7 @@ export class AwsAccessLayer {
         status: 'error',
         durationMs: Date.now() - startedAt,
         ...(classified.code ? { errorCode: classified.code } : {}),
+        errorKind: classified.kind,
       });
       logger.debug('AWS call failed', {
         service: args.service,

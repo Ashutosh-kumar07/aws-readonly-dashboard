@@ -140,6 +140,23 @@ function findingsTable(findings, actions, overrides) {
   });
 }
 
+function coverageNotice(checks) {
+  const partial = checks.filter((check) => check.truncated);
+  if (partial.length === 0) return null;
+  return el('div', { class: 'notice notice--warn' }, [
+    el('strong', { text: 'Some checks inspected only part of the inventory' }),
+    el(
+      'ul',
+      { class: 'list-reset' },
+      partial.map((check) =>
+        el('li', {
+          text: `${check.title} (${check.region}): ${check.resourcesEvaluated ?? 0} resource(s) inspected. Raise the scan limits in Settings to cover the rest.`,
+        })
+      )
+    ),
+  ]);
+}
+
 function checkStatusTable(checks) {
   const notEvaluated = checks.filter((check) => check.state === 'not-evaluated');
   if (notEvaluated.length === 0) return null;
@@ -245,6 +262,9 @@ function renderProfile(profile, state, actions) {
       ])
     );
   }
+
+  const coverage = coverageNotice(data.checks);
+  if (coverage) body.append(coverage);
 
   const checksCard = checkStatusTable(data.checks);
   if (checksCard) body.append(checksCard);

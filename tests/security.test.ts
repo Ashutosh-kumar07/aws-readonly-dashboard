@@ -8,7 +8,7 @@ import {
   securityGroupCheck,
   SENSITIVE_PORTS,
 } from '../src/services/security/checks/security-groups.js';
-import { lambdaVpcCheck } from '../src/services/security/checks/lambda.js';
+import { lambdaVpcCheck, lambdaPublicPolicyCheck } from '../src/services/security/checks/lambda.js';
 import { iamHygieneCheck, accessKeyAgeDays } from '../src/services/security/checks/iam.js';
 import {
   SECURITY_CHECKS,
@@ -167,9 +167,145 @@ describe('lambda checks', () => {
     const layer = new AwsAccessLayer({ clientFactory: () => client as never });
     const result = await lambdaVpcCheck.run(context(layer));
 
+    // One aggregated finding per region, with the functions in the evidence.
     expect(result.findings).toHaveLength(1);
-    expect(result.findings[0]?.resourceId).toBe('no-vpc');
+    expect(result.findings[0]?.title).toContain('1 of 2 Lambda functions run outside a VPC');
+    expect(result.findings[0]?.evidence).toMatchObject({
+      functionsOutsideVpc: 1,
+      functionsTotal: 2,
+    });
+    expect((result.findings[0]?.evidence.functions as Array<{ name: string }>)[0]?.name).toBe(
+      'no-vpc'
+    );
     expect(result.resourcesEvaluated).toBe(2);
+  });
+
+  it('does not raise a finding when every function is in a VPC', async () => {
+    const client = new FakeClient({
+      ListFunctions: {
+        Functions: [{ FunctionName: 'in-vpc', VpcConfig: { SubnetIds: ['subnet-1'] } }],
+      },
+    });
+    const layer = new AwsAccessLayer({ clientFactory: () => client as never });
+    const result = await lambdaVpcCheck.run(context(layer));
+
+    expect(result.evaluated).toBe(true);
+    expect(result.findings).toHaveLength(0);
+  });
+
+  it('stays at one finding however many functions are outside a VPC', async () => {
+    const functions = Array.from({ length: 450 }, (_, index) => ({ FunctionName: `fn-${index}` }));
+    const client = new FakeClient({ ListFunctions: { Functions: functions } });
+    const layer = new AwsAccessLayer({ clientFactory: () => client as never });
+    const result = await lambdaVpcCheck.run(context(layer));
+
+    // 450 individual low findings would bury the real issues in the UI and
+    // dominate the AI payload.
+    expect(result.findings).toHaveLength(1);
+    expect(result.findings[0]?.title).toContain('450 of 450');
+    expect((result.findings[0]?.evidence.functions as unknown[]).length).toBe(100);
+    expect(result.findings[0]?.evidence.note).toContain('first 100');
+  });
+
+  it('paginates through every function in the VPC check', async () => {
+    const functions = Array.from({ length: 450 }, (_, index) => ({
+      FunctionName: `fn-${index}`,
+      FunctionArn: `arn:aws:lambda:us-east-1:111122223333:function:fn-${index}`,
+    }));
+    let page = 0;
+    const client = new FakeClient({
+      ListFunctions: () => {
+        const slice = functions.slice(page * 50, (page + 1) * 50);
+        page += 1;
+        return {
+          Functions: slice,
+          NextMarker: page * 50 < functions.length ? `m${page}` : undefined,
+        };
+      },
+    });
+    const layer = new AwsAccessLayer({ clientFactory: () => client as never });
+    const result = await lambdaVpcCheck.run(context(layer));
+
+    expect(result.resourcesEvaluated).toBe(450);
+    expect(result.findings[0]?.evidence.functionsOutsideVpc).toBe(450);
+    expect(result.truncated).toBeFalsy();
+  });
+
+  it('states partial coverage when the policy-lookup limit is reached', async () => {
+    const functions = Array.from({ length: 120 }, (_, index) => ({
+      FunctionName: `fn-${index}`,
+      LastModified: `2026-03-${String((index % 28) + 1).padStart(2, '0')}T00:00:00Z`,
+    }));
+    const client = new FakeClient({
+      ListFunctions: { Functions: functions },
+      GetPolicy: awsError('ResourceNotFoundException', 'no policy'),
+    });
+    const layer = new AwsAccessLayer({ clientFactory: () => client as never, maxRetries: 0 });
+    const config = defaultConfig();
+    config.security.maxLambdaPolicyLookupsPerRegion = 25;
+
+    const result = await lambdaPublicPolicyCheck.run(context(layer, { config }));
+
+    expect(result.resourcesEvaluated).toBe(25);
+    expect(result.truncated).toBe(true);
+    // The uninspected functions must be declared, not silently skipped.
+    expect(result.issues.some((issue) => issue.label.includes('Partially evaluated'))).toBe(true);
+    expect(result.issues.some((issue) => issue.message.includes('95 function(s)'))).toBe(true);
+  });
+
+  it('inspects every function when the limit is raised above the inventory', async () => {
+    const functions = Array.from({ length: 300 }, (_, index) => ({ FunctionName: `fn-${index}` }));
+    const client = new FakeClient({
+      ListFunctions: { Functions: functions },
+      GetPolicy: awsError('ResourceNotFoundException', 'no policy'),
+    });
+    const layer = new AwsAccessLayer({ clientFactory: () => client as never, maxRetries: 0 });
+    const config = defaultConfig();
+    config.security.maxLambdaPolicyLookupsPerRegion = 500;
+
+    const result = await lambdaPublicPolicyCheck.run(context(layer, { config }));
+
+    expect(result.resourcesEvaluated).toBe(300);
+    expect(result.truncated).toBe(false);
+    expect(result.issues).toHaveLength(0);
+  });
+
+  it('reports the policy check as not evaluated when the limit is zero', async () => {
+    const client = new FakeClient({ ListFunctions: { Functions: [{ FunctionName: 'fn' }] } });
+    const layer = new AwsAccessLayer({ clientFactory: () => client as never });
+    const config = defaultConfig();
+    config.security.maxLambdaPolicyLookupsPerRegion = 0;
+
+    const result = await lambdaPublicPolicyCheck.run(context(layer, { config }));
+
+    expect(result.evaluated).toBe(false);
+    expect(result.findings).toHaveLength(0);
+    expect(result.issues[0]?.label).toMatch(/disabled/i);
+  });
+
+  it('finds a public function policy within the inspected set', async () => {
+    const client = new FakeClient({
+      ListFunctions: {
+        Functions: [
+          {
+            FunctionName: 'public-fn',
+            FunctionArn: 'arn:aws:lambda:us-east-1:1:function:public-fn',
+          },
+        ],
+      },
+      GetPolicy: {
+        Policy: JSON.stringify({
+          Statement: [
+            { Sid: 'open', Effect: 'Allow', Principal: '*', Action: 'lambda:InvokeFunction' },
+          ],
+        }),
+      },
+    });
+    const layer = new AwsAccessLayer({ clientFactory: () => client as never });
+    const result = await lambdaPublicPolicyCheck.run(context(layer));
+
+    expect(result.findings).toHaveLength(1);
+    expect(result.findings[0]?.severity).toBe('high');
   });
 
   it('does not claim compliance when Lambda cannot be listed', async () => {

@@ -18,8 +18,13 @@ import type { EvaluationIssue } from '../../types.js';
 const VPC_CHECK_ID = 'lambda-outside-vpc';
 const POLICY_CHECK_ID = 'lambda-public-resource-policy';
 
-/** Upper bound on per-function policy lookups so a large account is not hammered. */
-const MAX_POLICY_LOOKUPS = 100;
+/**
+ * Default upper bound on per-function policy lookups, used when configuration
+ * does not say otherwise. Each lookup is one `lambda:GetPolicy` call, so the
+ * limit is a cost control rather than a technical one, and it is configurable
+ * in Settings.
+ */
+const DEFAULT_POLICY_LOOKUPS = 100;
 
 async function listFunctions(context: CheckContext): Promise<FunctionConfiguration[]> {
   const client = context.access.client('lambda', LambdaClient, {
@@ -62,33 +67,51 @@ export const lambdaVpcCheck: SecurityCheck = {
       ]);
     }
 
-    const findings = functions
-      .filter((fn) => !fn.VpcConfig?.SubnetIds || fn.VpcConfig.SubnetIds.length === 0)
-      .map((fn) =>
-        buildFinding({
-          context,
-          checkId: VPC_CHECK_ID,
-          title: `Lambda function ${fn.FunctionName} is not attached to a VPC`,
-          severity: 'low',
-          resourceType: 'AWS::Lambda::Function',
-          resourceId: fn.FunctionName ?? 'unknown',
-          ...(fn.FunctionArn ? { resourceArn: fn.FunctionArn } : {}),
-          source: 'Lambda',
-          evidence: {
-            functionName: fn.FunctionName,
+    const outsideVpc = functions.filter(
+      (fn) => !fn.VpcConfig?.SubnetIds || fn.VpcConfig.SubnetIds.length === 0
+    );
+
+    if (outsideVpc.length === 0) {
+      return evaluated({ resourcesEvaluated: functions.length });
+    }
+
+    // One aggregated finding per region rather than one per function: in an
+    // account with hundreds of functions, a per-function finding would bury the
+    // genuine issues and dominate the severity counts. The functions themselves
+    // are listed in the evidence.
+    const MAX_LISTED = 100;
+    const findings = [
+      buildFinding({
+        context,
+        checkId: VPC_CHECK_ID,
+        title: `${outsideVpc.length} of ${functions.length} Lambda function${
+          functions.length === 1 ? '' : 's'
+        } run outside a VPC`,
+        severity: 'low',
+        resourceType: 'AWS::Lambda::Function',
+        resourceId: `lambda-outside-vpc-${context.region}`,
+        source: 'Lambda',
+        evidence: {
+          region: context.region,
+          functionsOutsideVpc: outsideVpc.length,
+          functionsTotal: functions.length,
+          functions: outsideVpc.slice(0, MAX_LISTED).map((fn) => ({
+            name: fn.FunctionName,
             runtime: fn.Runtime,
             lastModified: fn.LastModified,
-            vpcConfig: fn.VpcConfig ?? null,
-            role: fn.Role,
-          },
-          why:
-            'The function runs in the Lambda service network rather than in your VPC. Its outbound traffic is not subject to VPC routing, ' +
-            'security groups, or VPC endpoint policies, and it cannot reach resources that only accept private connectivity.',
-          recommendation:
-            'If the function needs private connectivity or VPC-level egress control, attach it to private subnets with an appropriate security group in the Lambda console. ' +
-            'Functions that only call public AWS APIs are frequently fine outside a VPC — treat this as context, not an automatic defect.',
-        })
-      );
+          })),
+          ...(outsideVpc.length > MAX_LISTED
+            ? { note: `Only the first ${MAX_LISTED} functions are listed here.` }
+            : {}),
+        },
+        why:
+          'These functions run in the Lambda service network rather than in your VPC. Their outbound traffic is not subject to VPC routing, ' +
+          'security groups or VPC endpoint policies, and they cannot reach resources that only accept private connectivity.',
+        recommendation:
+          'Attach the functions that need private connectivity or VPC-level egress control to private subnets with an appropriate security group, in the Lambda console. ' +
+          'Functions that only call public AWS APIs are frequently fine outside a VPC — treat this as context, not an automatic defect.',
+      }),
+    ];
 
     return evaluated({ findings, resourcesEvaluated: functions.length });
   },
@@ -117,11 +140,39 @@ export const lambdaPublicPolicyCheck: SecurityCheck = {
       ]);
     }
 
+    const limit = context.config.security.maxLambdaPolicyLookupsPerRegion ?? DEFAULT_POLICY_LOOKUPS;
+
+    if (limit === 0) {
+      return {
+        findings: [],
+        issues: [
+          {
+            profile: context.profile,
+            ...(context.accountId ? { accountId: context.accountId } : {}),
+            region: context.region,
+            service: 'Lambda',
+            check: POLICY_CHECK_ID,
+            kind: 'unknown',
+            label: 'Not evaluated — per-function policy lookups are disabled',
+            message:
+              'The Lambda resource-policy check is switched off in Settings (limit set to 0), so public function policies were not evaluated.',
+          },
+        ],
+        evaluated: false,
+        resourcesEvaluated: 0,
+      };
+    }
+
     const client = context.access.client('lambda', LambdaClient, {
       profile: context.profile,
       region: context.region,
     });
-    const inspected = functions.slice(0, MAX_POLICY_LOOKUPS);
+    // Newest functions first: a recently deployed function is the likelier
+    // source of an unnoticed public policy.
+    const ordered = [...functions].sort((a, b) =>
+      String(b.LastModified ?? '').localeCompare(String(a.LastModified ?? ''))
+    );
+    const inspected = ordered.slice(0, limit);
     const issues: EvaluationIssue[] = [];
     const findings: CheckResult['findings'] = [];
     let permissionDenied = false;
@@ -194,12 +245,30 @@ export const lambdaPublicPolicyCheck: SecurityCheck = {
       }
     });
 
+    const truncated = functions.length > inspected.length;
+    if (truncated) {
+      // Partial coverage is stated explicitly: the functions that were not
+      // inspected have an unknown policy, not a clean one.
+      issues.push({
+        profile: context.profile,
+        ...(context.accountId ? { accountId: context.accountId } : {}),
+        region: context.region,
+        service: 'Lambda',
+        check: POLICY_CHECK_ID,
+        kind: 'unknown',
+        label: `Partially evaluated — ${inspected.length} of ${functions.length} functions inspected`,
+        message:
+          `The resource policies of ${functions.length - inspected.length} function(s) in this region were not read, because the per-region ` +
+          'lookup limit was reached. Raise "Lambda policy lookups per region" in Settings to cover them, at the cost of more AWS API calls.',
+      });
+    }
+
     return {
       findings,
       issues,
       evaluated: !permissionDenied,
       resourcesEvaluated: inspected.length,
-      truncated: functions.length > inspected.length,
+      truncated,
     };
   },
 };

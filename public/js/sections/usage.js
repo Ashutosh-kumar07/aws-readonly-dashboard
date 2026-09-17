@@ -43,7 +43,16 @@ export function renderUsage({ state, actions }) {
     el('div', { class: 'grid grid--stats' }, [
       stat('Total AWS API calls', number(usage.totalCalls), 'this server session'),
       stat('Successful', number(usage.successfulCalls), ''),
-      stat('Failed', number(usage.failedCalls), 'permission, throttling or service errors'),
+      stat(
+        'Failed',
+        number(usage.failedCalls - (usage.expectedNotFoundCalls ?? 0)),
+        'permission, throttling or service errors'
+      ),
+      stat(
+        'Expected "not found"',
+        number(usage.expectedNotFoundCalls ?? 0),
+        'normal answers, e.g. a bucket with no policy'
+      ),
       stat('Categories touched', number(usage.categories.length), ''),
     ])
   );
@@ -66,7 +75,16 @@ export function renderUsage({ state, actions }) {
           { label: 'Category', key: 'label' },
           { label: 'Calls', numeric: true, render: (row) => number(row.calls) },
           { label: 'Successful', numeric: true, render: (row) => number(row.successes) },
-          { label: 'Errors', numeric: true, render: (row) => number(row.errors) },
+          {
+            label: 'Errors',
+            numeric: true,
+            render: (row) => number(row.errors - (row.expectedNotFound ?? 0)),
+          },
+          {
+            label: 'Expected 404s',
+            numeric: true,
+            render: (row) => number(row.expectedNotFound ?? 0),
+          },
           {
             label: 'Operations',
             render: (row) =>

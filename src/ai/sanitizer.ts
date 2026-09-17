@@ -354,6 +354,111 @@ function buildMatchers(rules: readonly SanitizationRule[]): Matcher[] {
   return matchers;
 }
 
+/**
+ * Values that identify a person or principal but cannot be recognised from
+ * their text alone (an IAM user called `jane.doe` looks like any other string).
+ * They are discovered from the keys and ARNs that do identify them, then
+ * replaced everywhere else in the payload — including inside free-text titles
+ * and descriptions such as "IAM user jane.doe has an old access key".
+ */
+interface DiscoveredEntity {
+  value: string;
+  category: 'USER' | 'ROLE';
+}
+
+/** Generic principal names that are concepts rather than identities. */
+const GENERIC_PRINCIPALS = new Set([
+  'root',
+  'admin',
+  'administrator',
+  'user',
+  'users',
+  'role',
+  'roles',
+  'test',
+  'guest',
+  'system',
+  'default',
+  'service',
+  'unknown',
+  'anonymous',
+]);
+
+const ARN_PRINCIPAL_PATTERN = /:(user|role|assumed-role)\/([^\s"'/]+)/g;
+
+function isReplaceableName(value: string): boolean {
+  // Too short to match safely, or a generic concept rather than an identity.
+  return value.length >= 4 && !GENERIC_PRINCIPALS.has(value.toLowerCase());
+}
+
+function discoverEntities(
+  value: unknown,
+  found: Map<string, DiscoveredEntity>,
+  key?: string,
+  depth = 0
+): void {
+  if (depth > 12) return;
+  if (typeof value === 'string') {
+    if (key && USER_KEY_PATTERN.test(key) && isReplaceableName(value)) {
+      found.set(value, { value, category: 'USER' });
+    }
+    if (key && ROLE_KEY_PATTERN.test(key) && isReplaceableName(value)) {
+      found.set(value, { value, category: 'ROLE' });
+    }
+    for (const match of value.matchAll(ARN_PRINCIPAL_PATTERN)) {
+      const name = match[2];
+      if (name && isReplaceableName(name)) {
+        found.set(name, { value: name, category: match[1] === 'user' ? 'USER' : 'ROLE' });
+      }
+    }
+    return;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) discoverEntities(item, found, key, depth + 1);
+    return;
+  }
+  if (value && typeof value === 'object') {
+    for (const [childKey, childValue] of Object.entries(value as Record<string, unknown>)) {
+      discoverEntities(childValue, found, childKey, depth + 1);
+    }
+  }
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/** Replaces discovered principal names wherever they appear in the payload. */
+function entityMatcher(
+  entities: DiscoveredEntity[],
+  strategy: SanitizationRule['strategy'],
+  ruleId: string,
+  label: string
+): Matcher | undefined {
+  if (entities.length === 0) return undefined;
+  // Longest first, so `deploy-role-prod` is not partly replaced by `deploy-role`.
+  const ordered = [...entities].sort((a, b) => b.value.length - a.value.length);
+  const pattern = new RegExp(
+    `(?<![A-Za-z0-9_-])(${ordered.map((entity) => escapeRegExp(entity.value)).join('|')})(?![A-Za-z0-9_-])`,
+    'g'
+  );
+  const byValue = new Map(ordered.map((entity) => [entity.value, entity.category]));
+
+  return {
+    id: ruleId,
+    label,
+    strategy,
+    placeholder: 'USER',
+    apply(value, ctx) {
+      return value.replace(pattern, (match) => {
+        const category = byValue.get(match) ?? 'USER';
+        ctx.count(this.id);
+        return strategy === 'redact' ? `<${category}>` : ctx.pseudonym(category, match);
+      });
+    },
+  };
+}
+
 function sanitizeString(
   value: string,
   matchers: Matcher[],
@@ -395,6 +500,26 @@ export function sanitize<T = unknown>(
 ): SanitizationResult<T> {
   const ctx = new SanitizerContext();
   const matchers = buildMatchers(rules);
+
+  // Discovery pass: find principal names from the keys and ARNs that identify
+  // them, so they can also be removed from free text elsewhere in the payload.
+  const userRule = rules.find((rule) => rule.id === 'iam-username');
+  const roleRule = rules.find((rule) => rule.id === 'iam-role');
+  const discovered = new Map<string, DiscoveredEntity>();
+  if (userRule?.enabled || roleRule?.enabled) {
+    discoverEntities(value, discovered);
+  }
+  const applicable = [...discovered.values()].filter((entity) =>
+    entity.category === 'USER' ? userRule?.enabled : roleRule?.enabled
+  );
+  const extra = entityMatcher(
+    applicable,
+    userRule?.strategy ?? 'pseudonymize',
+    'iam-username',
+    userRule?.label ?? 'IAM user names'
+  );
+  if (extra) matchers.push(extra);
+
   const sanitized = walk(value, matchers, ctx) as T;
 
   const report: SanitizationReport = {

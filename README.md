@@ -105,7 +105,8 @@ Dashboard: http://127.0.0.1:9002
   IAM Access Analyzer, Trusted Advisor, AWS Config, CloudTrail configuration,
   public S3 buckets, Lambda VPC and policy exposure, security groups open to the
   internet, and IAM account hygiene. Findings carry severity, status, evidence,
-  reasoning and a manual recommendation.
+  reasoning and a manual recommendation. Where a check inspects only part of a
+  large inventory, it says so rather than implying full coverage.
 - **Compute Optimizer** — EC2, Auto Scaling, EBS, Lambda, ECS, RDS and idle-resource
   recommendations, showing only the figures AWS itself provides.
 - **CloudWatch** — largest log groups, rapid growth (percentage *and* absolute
@@ -610,9 +611,23 @@ The dashboard finds the next free port automatically and prints it. Use `--port`
 choose a different starting point.
 
 **High AWS API call counts**
-Open **AWS API Usage** to see exactly which category is responsible. Reduce the
-number of selected regions, disable API categories you do not need in Settings, or
-lower `maxLogGroupsPerRegion`.
+Open **AWS API Usage** to see exactly which category is responsible. The usual
+culprits are per-resource checks: Lambda resource policies (one call per function)
+and S3 bucket settings (up to five calls per bucket). Tune them under
+**Settings → Security scan limits**, reduce the number of selected regions, or
+disable API categories you do not need.
+
+**"Partially evaluated — N of M inspected"**
+A scan limit stopped the check before it covered the whole inventory. The resources
+that were not inspected have an *unknown* status, not a clean one. Raise the limit
+in **Settings → Security scan limits** to cover them; the cost is more AWS API calls.
+The "Lambda functions outside a VPC" check is never limited — it always covers every
+function and reports them as a single aggregated finding per region.
+
+**Lots of "expected not found" calls in AWS API Usage**
+That is normal. Several AWS APIs answer "not found" for an ordinary state — a bucket
+with no policy, a Lambda function with no resource policy — and the counter shows
+these separately from failures that need attention.
 
 ---
 
