@@ -491,7 +491,7 @@ export async function fetchComputeOptimizer(
   return {
     profile: options.profile,
     ...(options.accountId ? { accountId: options.accountId } : {}),
-    status: issues.length === 0 ? 'ok' : recommendations.length > 0 ? 'partial' : 'partial',
+    status: issues.length === 0 ? 'ok' : 'partial',
     data,
     issues,
   };

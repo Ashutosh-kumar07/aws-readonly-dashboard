@@ -261,6 +261,17 @@ describe('the in-memory AWS data lifecycle', () => {
     expect(fetches).toBe(1);
   });
 
+  it('reuses in-memory data for a normal load and refetches only when forced', async () => {
+    const store = new AwsDataStore();
+    let fetches = 0;
+    const fetcher = async () => ({ value: (fetches += 1) });
+
+    await store.resolve('security', selection, fetcher, { force: true }); // Refresh All
+    await store.resolve('security', selection, fetcher); // the view reloading afterwards
+
+    expect(fetches).toBe(1);
+  });
+
   it('builds a stable, order-independent selection key', () => {
     expect(selectionKey('billing', { profiles: ['b', 'a'], regions: ['z', 'y'] })).toBe(
       selectionKey('billing', { profiles: ['a', 'b'], regions: ['y', 'z'] })

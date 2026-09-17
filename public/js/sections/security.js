@@ -26,10 +26,30 @@ const filters = {
   text: '',
 };
 
-function findingDetail(finding, actions) {
+/**
+ * The severity to display. After an AI analysis, the model's severity replaces
+ * the dashboard's own for findings it matched — the original is not shown too.
+ */
+function displayedSeverity(finding, overrides) {
+  const override = overrides?.[finding.id];
+  return override
+    ? { severity: override, fromAi: true }
+    : { severity: finding.severity, fromAi: false };
+}
+
+function findingDetail(finding, actions, overrides) {
   const body = el('div', { class: 'stack' }, [
     detailGrid([
-      ['Severity', badge(finding.severity, finding.severity)],
+      [
+        'Severity',
+        (() => {
+          const shown = displayedSeverity(finding, overrides);
+          return el('span', {}, [
+            badge(shown.severity, shown.severity),
+            shown.fromAi ? el('span', { class: 'subtle', text: ' assigned by AI analysis' }) : null,
+          ]);
+        })(),
+      ],
       ['Status', finding.status],
       ['Check', finding.checkId],
       ['Source', finding.source],
@@ -81,11 +101,24 @@ function findingDetail(finding, actions) {
   return body;
 }
 
-function findingsTable(findings, actions) {
+function findingsTable(findings, actions, overrides) {
   return table({
     emptyMessage: 'No findings match the current filters.',
     columns: [
-      { label: 'Severity', render: (row) => badge(row.severity, row.severity) },
+      {
+        label: 'Severity',
+        render: (row) => {
+          const shown = displayedSeverity(row, overrides);
+          return el(
+            'span',
+            { title: shown.fromAi ? 'Severity assigned by AI analysis' : undefined },
+            [
+              badge(shown.severity, shown.severity),
+              shown.fromAi ? el('span', { class: 'subtle', text: ' AI' }) : null,
+            ]
+          );
+        },
+      },
       {
         label: 'Finding',
         render: (row) => el('span', { class: 'truncate', title: row.title, text: row.title }),
@@ -103,7 +136,7 @@ function findingsTable(findings, actions) {
       },
     ],
     rows: findings,
-    onRowClick: (row) => openDetail(row.title, findingDetail(row, actions)),
+    onRowClick: (row) => openDetail(row.title, findingDetail(row, actions, overrides)),
   });
 }
 
@@ -171,9 +204,10 @@ function renderProfile(profile, state, actions) {
     ])
   );
 
+  const overrides = state.aiSeverityOverrides ?? {};
   const combined = [...data.findings, ...data.resolvedFindings];
   const visible = combined.filter((finding) => {
-    if (!filters.severities.has(finding.severity)) return false;
+    if (!filters.severities.has(displayedSeverity(finding, overrides).severity)) return false;
     if (!filters.statuses.has(finding.status)) return false;
     if (filters.text) {
       const needle = filters.text.toLowerCase();
@@ -197,9 +231,20 @@ function renderProfile(profile, state, actions) {
           text: `${visible.length} shown of ${combined.length} tracked`,
         }),
       ]),
-      findingsTable(visible, actions),
+      findingsTable(visible, actions, overrides),
     ])
   );
+
+  if (Object.keys(overrides).length > 0) {
+    body.append(
+      el('div', { class: 'notice notice--info' }, [
+        el('strong', { text: 'Severities from the latest AI analysis are in effect' }),
+        el('span', {
+          text: `${Object.keys(overrides).length} finding(s) show the severity the AI assigned from the supplied evidence. Refreshing this section restores the dashboard's own severities.`,
+        }),
+      ])
+    );
+  }
 
   const checksCard = checkStatusTable(data.checks);
   if (checksCard) body.append(checksCard);

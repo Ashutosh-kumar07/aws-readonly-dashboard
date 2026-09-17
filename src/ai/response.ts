@@ -14,6 +14,8 @@ export interface AiFinding {
   evidence: string;
   sections: string[];
   resource: string | null;
+  /** Id of the dashboard security finding this replaces, when the model matched one. */
+  findingId: string | null;
 }
 
 export interface AiRecommendation {
@@ -119,6 +121,7 @@ export function parseAiAnalysis(raw: string): AiAnalysis {
         evidence: asString(entry.evidence).trim(),
         sections: asStringArray(entry.sections),
         resource: typeof entry.resource === 'string' ? entry.resource : null,
+        findingId: typeof entry.findingId === 'string' && entry.findingId ? entry.findingId : null,
       };
     })
     .filter((finding) => finding.title.length > 0);

@@ -221,7 +221,7 @@ export async function runSecurityAnalysis(
   return {
     profile: options.profile,
     ...(options.accountId ? { accountId: options.accountId } : {}),
-    status: issues.length === 0 ? 'ok' : findings.length > 0 ? 'partial' : 'partial',
+    status: issues.length === 0 ? 'ok' : 'partial',
     data,
     issues,
   };

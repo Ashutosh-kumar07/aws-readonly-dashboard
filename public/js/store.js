@@ -18,6 +18,8 @@ export const state = {
   ai: null,
   aiResult: null,
   aiError: null,
+  /** Finding id -> severity assigned by the AI in the most recent analysis. */
+  aiSeverityOverrides: {},
   aiBusy: false,
   aiPreview: null,
   aiSelection: { sections: ['billing'], question: '' },
@@ -143,6 +145,7 @@ export const actions = {
   },
 
   invalidateAllSections() {
+    state.aiSeverityOverrides = {};
     for (const key of SECTION_KEYS) {
       state.sections[key] = { status: 'idle', data: null, error: null, fetchedAt: null };
     }
@@ -187,8 +190,10 @@ export const actions = {
     notify();
 
     try {
+      // The server refetches each section once; the reloads below then reuse
+      // that in-memory data rather than issuing a second round of AWS calls.
       await api.refreshAll(selectionBody({ sections: targets }));
-      await Promise.all(targets.map((key) => actions.loadSection(key, { force: true })));
+      await Promise.all(targets.map((key) => actions.loadSection(key)));
       if (state.cloudtrail.result) await actions.searchCloudTrail({ force: true });
       toast('Refreshed AWS data for the current selection.', 'success');
     } catch (error) {
@@ -259,7 +264,17 @@ export const actions = {
         regions: state.selectedRegions,
         question,
         selectedEvents,
+        cloudtrailFilters: state.cloudtrail.filters,
       });
+      // The AI's severity replaces the dashboard's own for any finding it
+      // matched; the original severity is not shown alongside it.
+      if (sections.includes('security')) {
+        const overrides = {};
+        for (const finding of state.aiResult.analysis.findings ?? []) {
+          if (finding.findingId) overrides[finding.findingId] = finding.severity;
+        }
+        state.aiSeverityOverrides = overrides;
+      }
       state.view = 'ai';
       toast(`Analysis complete (${state.aiResult.provider}).`, 'success');
     } catch (error) {
@@ -281,6 +296,7 @@ export const actions = {
         regions: state.selectedRegions,
         question,
         selectedEvents,
+        cloudtrailFilters: state.cloudtrail.filters,
       });
     } catch (error) {
       toast(`Could not build the payload preview: ${error.message}`, 'error');

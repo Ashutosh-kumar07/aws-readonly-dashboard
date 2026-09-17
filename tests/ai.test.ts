@@ -279,6 +279,20 @@ describe('AI response validation', () => {
     expect(analysis.findings[0]?.title).toBe('kept');
   });
 
+  it('carries the finding id so the AI severity can replace the dashboard severity', () => {
+    const analysis = parseAiAnalysis(
+      JSON.stringify({
+        summary: 's',
+        findings: [
+          { title: 'Open SSH', severity: 'critical', evidence: 'e', findingId: 'abc123' },
+          { title: 'Unmatched', severity: 'low', evidence: 'e' },
+        ],
+      })
+    );
+    expect(analysis.findings[0]?.findingId).toBe('abc123');
+    expect(analysis.findings[1]?.findingId).toBeNull();
+  });
+
   it('keeps the raw response on the error for inspection', () => {
     try {
       parseAiAnalysis('not json');
@@ -301,6 +315,7 @@ describe('prompt construction', () => {
     });
     expect(prompt).toContain('Never invent resources');
     expect(prompt).toContain('"summary"');
+    expect(prompt).toContain('never invent an id');
     expect(prompt.match(/Never invent resources/g)).toHaveLength(1);
     expect(prompt).toContain('{"a":1}');
   });

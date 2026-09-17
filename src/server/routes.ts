@@ -260,6 +260,8 @@ export function createApiRouter(deps: RouteDependencies): Router {
     profiles: string[];
     regions: string[];
     selectedEvents?: NormalisedEvent[];
+    /** The filters the user currently has applied in the CloudTrail view. */
+    cloudtrailFilters?: CloudTrailSearchFilters;
   }): Promise<CompactSectionPayload[]> {
     const payloads: CompactSectionPayload[] = [];
     const options = { profiles: input.profiles, regions: input.regions };
@@ -355,10 +357,12 @@ export function createApiRouter(deps: RouteDependencies): Router {
             );
           }
         } else {
+          // Analyse what the user is actually looking at, not a fresh
+          // unfiltered search.
           const result = await service.searchCloudTrail({
             profiles: input.profiles,
             regions: input.regions,
-            filters: {},
+            filters: input.cloudtrailFilters ?? {},
           });
           const byProfile = new Map<string, NormalisedEvent[]>();
           for (const event of result.events) {
@@ -397,6 +401,7 @@ export function createApiRouter(deps: RouteDependencies): Router {
     profiles: string[];
     regions: string[];
     selectedEvents: NormalisedEvent[];
+    cloudtrailFilters: CloudTrailSearchFilters;
     userQuestion?: string;
   } {
     const body = requireBody(context);
@@ -419,6 +424,10 @@ export function createApiRouter(deps: RouteDependencies): Router {
       selectedEvents: Array.isArray(body.selectedEvents)
         ? (body.selectedEvents as NormalisedEvent[])
         : [],
+      cloudtrailFilters:
+        body.cloudtrailFilters && typeof body.cloudtrailFilters === 'object'
+          ? (body.cloudtrailFilters as CloudTrailSearchFilters)
+          : {},
       ...(typeof body.question === 'string' && body.question.trim()
         ? { userQuestion: body.question.trim() }
         : {}),

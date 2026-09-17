@@ -31,7 +31,8 @@ export const RESPONSE_SCHEMA = `{
       "severity": "critical" | "high" | "medium" | "low",
       "evidence": string,
       "sections": string[],
-      "resource": string | null
+      "resource": string | null,
+      "findingId": string | null
     }
   ],
   "recommendations": [
@@ -51,6 +52,7 @@ Rules you must follow:
 3. Every finding and recommendation must be traceable to a specific value in the supplied evidence; quote the value in "evidence".
 4. Entries under "notEvaluated" mean a check could not run. Never treat them as evidence that the environment is secure or healthy.
 5. Severity must be exactly one of: critical, high, medium, low. Your severity replaces the dashboard's own severity, so choose it from the evidence.
+5b. When a finding corresponds to a supplied security finding, copy that finding's "id" into "findingId" so the dashboard can apply your severity to it. Use null otherwise, and never invent an id.
 6. Do not assert that one thing caused another unless the supplied evidence supports it; use the "correlations" confidence field honestly.
 7. Recommendations are advisory only. This dashboard cannot and will not perform AWS changes; write recommendations as steps a human would take in the AWS console.
 8. Placeholders such as <USER_1>, <ACCOUNT_2> or <IP> are redacted or pseudonymised values. Treat identical placeholders as the same entity; never try to guess the real value.
