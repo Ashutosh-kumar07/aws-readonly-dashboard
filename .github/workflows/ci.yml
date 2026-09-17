@@ -1,0 +1,142 @@
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: Verify (Node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['18.17', '20', '22']
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Check formatting
+        run: npm run format:check
+
+      - name: Type check
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test
+
+      - name: Build
+        run: npm run build
+
+  package:
+    name: Package contents
+    runs-on: ubuntu-latest
+    needs: verify
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - run: npm ci
+      - run: npm run build
+
+      - name: Create the tarball
+        run: npm pack
+
+      - name: List the tarball contents
+        run: tar -tzf aws-readonly-dashboard-*.tgz | sort
+
+      - name: Verify the tarball contains only what it should
+        run: |
+          contents="$(tar -tzf aws-readonly-dashboard-*.tgz)"
+
+          # Required entry points must be present.
+          for required in package/dist/cli.js package/dist/index.js package/public/index.html package/README.md package/LICENSE; do
+            echo "$contents" | grep -qx "$required" || { echo "missing from tarball: $required"; exit 1; }
+          done
+
+          # Development and source files must be absent.
+          if echo "$contents" | grep -E '^package/(src|tests|scripts|\.github)/'; then
+            echo "development files found in the tarball"; exit 1
+          fi
+          if echo "$contents" | grep -E '^package/(tsconfig.*\.json|eslint\.config\.js|vitest\.config\.ts|\.env.*)$'; then
+            echo "development configuration found in the tarball"; exit 1
+          fi
+          echo "tarball contents verified"
+
+      - name: Verify no credentials or local data are bundled
+        run: |
+          set -o pipefail
+          tar -xzOf aws-readonly-dashboard-*.tgz > /tmp/bundle.txt
+
+          # Real credential *values*, not the environment variable names and regex
+          # literals that legitimately appear in the sanitizer and the docs.
+          if grep -aoE '\b(AKIA|ASIA)[0-9A-Z]{16}\b' /tmp/bundle.txt; then
+            echo "an AWS access key id was found in the tarball"; exit 1
+          fi
+          if grep -aoiE '(aws_secret_access_key|aws_session_token)[[:space:]]*[=:][[:space:]]*["'"'"']?[A-Za-z0-9/+=]{20,}' /tmp/bundle.txt; then
+            echo "an assigned AWS secret was found in the tarball"; exit 1
+          fi
+          if grep -aoE 'BEGIN [A-Z ]*PRIVATE KEY' /tmp/bundle.txt; then
+            echo "a private key was found in the tarball"; exit 1
+          fi
+
+          # The user's own local data must never be packaged.
+          if tar -tzf aws-readonly-dashboard-*.tgz | grep -E '(config\.json|security-findings\.json|ai-history\.json)$'; then
+            echo "local application data found in the tarball"; exit 1
+          fi
+          echo "no credential material or local data found"
+
+      - name: Install the packed artefact and smoke test the CLI
+        run: |
+          mkdir -p /tmp/verify && cd /tmp/verify
+          npm init -y > /dev/null
+          npm install "$GITHUB_WORKSPACE"/aws-readonly-dashboard-*.tgz
+          test -x node_modules/.bin/aws-readonly-dashboard
+          npx aws-readonly-dashboard --version
+          npx aws-readonly-dashboard --help | head -3
+
+      - name: Smoke test the server from the packed artefact
+        run: |
+          cd /tmp/verify
+          npx aws-readonly-dashboard --no-open --port 9321 --config-dir /tmp/verify-config &
+          server_pid=$!
+          for _ in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:9321/api/status > /dev/null; then break; fi
+            sleep 1
+          done
+          curl -sf http://127.0.0.1:9321/api/status | grep -q '"readOnly":true'
+          curl -sf http://127.0.0.1:9321/ | grep -q 'AWS Read-Only Dashboard'
+          kill "$server_pid"
+
+      - name: Upload the tarball
+        uses: actions/upload-artifact@v4
+        with:
+          name: package-tarball
+          path: aws-readonly-dashboard-*.tgz
+          retention-days: 7
