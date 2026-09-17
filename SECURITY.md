@@ -14,7 +14,7 @@ Security fixes are released as patch versions of the latest minor release.
 Please report security issues privately rather than opening a public issue.
 
 - Preferred: GitHub's private vulnerability reporting —
-  <https://github.com/ashutosh-kumar07/aws-readonly-dashboard/security/advisories/new>
+  <https://github.com/Ashutosh-kumar07/aws-readonly-dashboard/security/advisories/new>
 - Alternative: open an issue asking for a private contact channel, without
   including any details of the vulnerability.
 

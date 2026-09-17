@@ -87,4 +87,4 @@ First public release.
 - 255 automated tests covering AWS safety, credentials, billing, security,
   CloudWatch, CloudTrail, AI behaviour and local configuration.
 
-[1.0.0]: https://github.com/ashutosh-kumar07/aws-readonly-dashboard/releases/tag/v1.0.0
+[1.0.0]: https://github.com/Ashutosh-kumar07/aws-readonly-dashboard/releases/tag/v1.0.0

@@ -21,13 +21,13 @@
   ],
   "license": "MIT",
   "author": "aws-readonly-dashboard contributors",
-  "homepage": "https://github.com/ashutosh-kumar07/aws-readonly-dashboard#readme",
+  "homepage": "https://github.com/Ashutosh-kumar07/aws-readonly-dashboard#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/ashutosh-kumar07/aws-readonly-dashboard.git"
+    "url": "git+https://github.com/Ashutosh-kumar07/aws-readonly-dashboard.git"
   },
   "bugs": {
-    "url": "https://github.com/ashutosh-kumar07/aws-readonly-dashboard/issues"
+    "url": "https://github.com/Ashutosh-kumar07/aws-readonly-dashboard/issues"
   },
   "type": "module",
   "main": "./dist/index.js",

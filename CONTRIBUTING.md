@@ -6,7 +6,7 @@ non-negotiable invariants are, and what a good pull request looks like.
 ## Getting started
 
 ```bash
-git clone https://github.com/ashutosh-kumar07/aws-readonly-dashboard.git
+git clone https://github.com/Ashutosh-kumar07/aws-readonly-dashboard.git
 cd aws-readonly-dashboard
 npm install
 npm run verify   # lint + typecheck + test + build

@@ -3,7 +3,7 @@
 > A local, strictly read-only AWS dashboard for cost, security, observability and
 > optimisation — with optional, explicitly triggered AI insights.
 
-[![CI](https://github.com/ashutosh-kumar07/aws-readonly-dashboard/actions/workflows/ci.yml/badge.svg)](https://github.com/ashutosh-kumar07/aws-readonly-dashboard/actions/workflows/ci.yml)
+[![CI](https://github.com/Ashutosh-kumar07/aws-readonly-dashboard/actions/workflows/ci.yml/badge.svg)](https://github.com/Ashutosh-kumar07/aws-readonly-dashboard/actions/workflows/ci.yml)
 [![npm version](https://img.shields.io/npm/v/aws-readonly-dashboard.svg)](https://www.npmjs.com/package/aws-readonly-dashboard)
 [![node](https://img.shields.io/node/v/aws-readonly-dashboard.svg)](https://nodejs.org)
 [![license](https://img.shields.io/npm/l/aws-readonly-dashboard.svg)](./LICENSE)
@@ -634,7 +634,7 @@ these separately from failures that need attention.
 ## Development
 
 ```bash
-git clone https://github.com/ashutosh-kumar07/aws-readonly-dashboard.git
+git clone https://github.com/Ashutosh-kumar07/aws-readonly-dashboard.git
 cd aws-readonly-dashboard
 npm install
 
