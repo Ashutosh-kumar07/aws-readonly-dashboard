@@ -87,7 +87,7 @@
     "@aws-sdk/client-sts": "^3.1134.0",
     "@aws-sdk/client-support": "^3.1134.0",
     "@aws-sdk/credential-providers": "^3.1134.0",
-    "@smithy/shared-ini-file-loader": "^3.1.12"
+    "@smithy/shared-ini-file-loader": "^4.7.2"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.5",
