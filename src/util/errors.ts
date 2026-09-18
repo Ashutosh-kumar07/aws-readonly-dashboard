@@ -18,6 +18,8 @@ export type AwsErrorKind =
   | 'refused-by-policy'
   | 'not-found'
   | 'invalid-request'
+  /** Not a failure: the check ran but covered only part of the inventory. */
+  | 'partial'
   | 'unknown';
 
 export interface ClassifiedAwsError {
@@ -303,6 +305,9 @@ export const ERROR_KIND_LABEL: Record<AwsErrorKind, string> = {
   'refused-by-policy': 'Unable to evaluate — refused by the read-only policy',
   'not-found': 'Unable to evaluate — resource or configuration not found',
   'invalid-request': 'Unable to evaluate — request rejected by AWS',
+  partial: 'Partially evaluated',
+  // Reserved for a failure the taxonomy genuinely does not recognise, so that
+  // "unexpected" stays a signal worth chasing rather than a catch-all.
   unknown: 'Unable to evaluate — unexpected error',
 };
 

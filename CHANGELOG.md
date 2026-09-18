@@ -5,6 +5,35 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.1] - 2026-09-18
+
+### Fixed
+
+- **The account-level S3 Block Public Access check failed with `Duplicate
+  middleware name 'parseOutpostArnablesMiddleaware'`.** An AWS SDK command object
+  may only be sent once — sending it applies its middleware plugins to its own
+  stack — and the access layer retried by re-sending the same instance. Any
+  retryable failure (throttling, a 5xx, a timeout) therefore turned that check
+  into an unexplained error. Retries now build a fresh command from the input the
+  first attempt started with. Of the clients this package uses, only S3 Control
+  rejects the duplicate today, which is why nothing else broke; the fix is in the
+  access layer, so it covers every service.
+- Partial-coverage notices are no longer classified as "unexpected error". They
+  carry their own kind, so *unexpected* now means a failure the taxonomy genuinely
+  does not recognise — worth chasing rather than routine.
+
+### Added
+
+- `tests/s3-scenarios.test.ts`: sixteen S3 scenarios driven through the **real**
+  AWS SDK clients with a stubbed transport — real commands, real middleware, real
+  XML parsing. Covers throttle-and-retry (the bug above), paged listings,
+  continuation tokens, the scan limit, `BucketRegion` from the listing, the legacy
+  `EU` location, cross-region redirects, denied reads, directory buckets, dotted
+  bucket names, an empty account, a denied listing, and a whole-analyzer run in
+  which every S3 call fails differently and none arrives as an unexpected error.
+  The fixture-based tests used everywhere else never build a middleware stack, so
+  they could not have caught this class of fault.
+
 ## [1.3.0] - 2026-09-18
 
 ### Fixed
@@ -248,6 +277,7 @@ First public release.
 - 255 automated tests covering AWS safety, credentials, billing, security,
   CloudWatch, CloudTrail, AI behaviour and local configuration.
 
+[1.3.1]: https://github.com/Ashutosh-kumar07/aws-readonly-dashboard/releases/tag/v1.3.1
 [1.3.0]: https://github.com/Ashutosh-kumar07/aws-readonly-dashboard/releases/tag/v1.3.0
 [1.2.0]: https://github.com/Ashutosh-kumar07/aws-readonly-dashboard/releases/tag/v1.2.0
 [1.1.0]: https://github.com/Ashutosh-kumar07/aws-readonly-dashboard/releases/tag/v1.1.0

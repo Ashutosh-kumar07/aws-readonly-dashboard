@@ -60,6 +60,21 @@ will not be merged, however convenient it is.
     evaluated — the alternative is an all-or-nothing failure that leaves the user
     with nothing.
 
+11. **An AWS SDK command object is single-use.** Sending a command applies its
+    middleware plugins to its own stack, and applying them twice is refused — the
+    S3 Control client throws `Duplicate middleware name`. The access layer builds a
+    fresh command for every retry; never re-send an instance.
+
+## Testing against the real SDK
+
+`tests/s3-scenarios.test.ts` drives the real `S3Client` and `S3ControlClient`
+through the access layer with a stubbed transport: real commands, real middleware,
+real response parsing, scripted HTTP answers. The hand-written `FakeClient` used
+elsewhere never builds a middleware stack, so it cannot catch a fault in how this
+package uses the SDK — the duplicate-middleware bug lived behind exactly that gap.
+Anything touching retries, endpoints, pagination or response parsing needs a test
+at this level, not only a fixture one.
+
 ## Long-running sections
 
 Sections that can take more than a few seconds stream their results:

@@ -528,7 +528,7 @@ export const s3PublicAccessCheck: SecurityCheck = {
         region: GLOBAL_SCOPE,
         service: 'S3',
         check: CHECK_ID,
-        kind: 'unknown',
+        kind: 'partial',
         label: `Partially evaluated — ${incompleteBuckets.length} of ${inspected.length} buckets could not be fully inspected`,
         message:
           `These buckets were skipped or only partly read, so they are not reported as secure: ${incompleteBuckets
@@ -562,7 +562,7 @@ export const s3PublicAccessCheck: SecurityCheck = {
         region: GLOBAL_SCOPE,
         service: 'S3',
         check: CHECK_ID,
-        kind: 'unknown',
+        kind: 'partial',
         label: `Partially evaluated — ${inspected.length} buckets inspected, more exist`,
         message:
           `The account has more buckets than the scan limit of ${scanLimit}, so the rest were not examined. ` +

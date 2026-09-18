@@ -236,7 +236,7 @@ export const lambdaPublicPolicyCheck: SecurityCheck = {
         region: context.region,
         service: 'Lambda',
         check: POLICY_CHECK_ID,
-        kind: 'unknown',
+        kind: 'partial',
         label: `Partially evaluated — ${inspected.length} of ${functions.length} functions inspected`,
         message:
           `The resource policies of ${functions.length - inspected.length} function(s) in this region were not read, because the per-region ` +

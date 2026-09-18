@@ -133,6 +133,40 @@ interface DispatchArgs {
 /** A call slower than this is worth mentioning without turning on debug logs. */
 const SLOW_CALL_MS = 10_000;
 
+/**
+ * Produces the command to send on each attempt.
+ *
+ * An AWS SDK v3 command may only be sent once. Sending it applies the command's
+ * middleware plugins to its own stack, and applying them a second time is
+ * refused outright — `Duplicate middleware name 'parseOutpostArnablesMiddleaware'`
+ * from the S3 Control client, which is how a retried throttle turned into an
+ * unexplained failure. A retry therefore gets a new command built from the input
+ * the first attempt started with, so it cannot inherit middleware state or any
+ * in-place edit a previous attempt made to the input.
+ */
+function commandFactory(command: unknown): () => unknown {
+  const source = command as { constructor?: unknown; input?: unknown };
+  const input = source?.input;
+  const snapshot =
+    input && typeof input === 'object' && !Array.isArray(input) ? { ...(input as object) } : input;
+  let sent = false;
+
+  return () => {
+    if (!sent) {
+      sent = true;
+      return command;
+    }
+    try {
+      const constructor = source.constructor as (new (input: unknown) => unknown) | undefined;
+      if (typeof constructor === 'function') return new constructor(snapshot);
+    } catch {
+      // A command that cannot be rebuilt is retried as it is: no worse than
+      // before, and the failure it produces is reported either way.
+    }
+    return command;
+  };
+}
+
 export class AwsAccessLayer {
   readonly tracker: ApiCallTracker;
   private requestTimeoutMs: number;
@@ -243,9 +277,10 @@ export class AwsAccessLayer {
     const startedAt = Date.now();
 
     let timeouts = 0;
+    const nextCommand = commandFactory(args.command);
 
     try {
-      const output = await withRetry(() => this.sendOnce(args, operation), {
+      const output = await withRetry(() => this.sendOnce(args, nextCommand(), operation), {
         retries: this.maxRetries,
         baseDelayMs: 250,
         maxDelayMs: 5_000,
@@ -324,7 +359,11 @@ export class AwsAccessLayer {
    * turns into a section-wide outbreak of timeouts that looks like a
    * permissions problem. Aborting hands the socket back immediately.
    */
-  private async sendOnce<TOutput>(args: DispatchArgs, operation: string): Promise<TOutput> {
+  private async sendOnce<TOutput>(
+    args: DispatchArgs,
+    command: unknown,
+    operation: string
+  ): Promise<TOutput> {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.requestTimeoutMs);
     // The operation is written without a colon so it cannot be mistaken for an
@@ -337,7 +376,7 @@ export class AwsAccessLayer {
     try {
       return (await withTimeout(
         args.client
-          .send(args.command, {
+          .send(command, {
             abortSignal: controller.signal,
             requestTimeout: this.requestTimeoutMs,
           })
