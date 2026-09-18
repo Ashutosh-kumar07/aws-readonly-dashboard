@@ -38,6 +38,13 @@ jobs:
           cache: npm
           registry-url: https://registry.npmjs.org
 
+      # Trusted publishing (OIDC) needs npm 11.5.1 or later; Node 22 still
+      # ships npm 10.x, so the bundled CLI is too old to authenticate that way.
+      - name: Use an npm release that supports trusted publishing
+        run: |
+          npm install -g npm@latest
+          npm --version
+
       - run: npm ci
 
       - name: Verify (lint, types, tests, build)
@@ -57,19 +64,16 @@ jobs:
 
       # npm provenance attestations require a public source repository, so the
       # flag is only passed when the repository actually is public.
+      # Authentication comes from the OIDC token granted by `id-token: write`
+      # above, matched against the trusted publisher configured on npmjs.com for
+      # this repository and workflow file. No npm token is involved.
       - name: Publish with provenance
         if: ${{ !github.event.repository.private }}
         run: npm publish --provenance --access public --tag "${{ inputs.dist_tag || 'latest' }}"
-        env:
-          # Prefer trusted publishing (OIDC). NPM_TOKEN is only a fallback for
-          # repositories that have not configured a trusted publisher yet.
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Publish (private repository, provenance unavailable)
         if: ${{ github.event.repository.private }}
         run: npm publish --access public --tag "${{ inputs.dist_tag || 'latest' }}"
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Verify the published version
         run: |

@@ -181,6 +181,40 @@ The repository ships two workflows:
 - `.github/workflows/release.yml` — runs only when a `v*` tag is pushed (or when
   dispatched manually). It re-runs the full verification, then publishes.
 
+### Requirements
+
+Trusted publishing needs **npm 11.5.1 or later** and **Node 22.14 or later**. Node 22
+still bundles npm 10.x, so the release workflow upgrades the CLI before publishing:
+
+```yaml
+- run: npm install -g npm@latest
+```
+
+It also needs `id-token: write` on the job and `registry-url` set on
+`actions/setup-node`. Both are already configured.
+
+Once a trusted publisher is connected, the workflow authenticates with the OIDC
+token and no npm token is used at all — `NODE_AUTH_TOKEN` has been removed from
+the publish steps. If you ever need to fall back to token authentication, re-add
+`NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}` to the publish step and create a
+granular token with "Bypass two-factor authentication" enabled.
+
+### Allowed actions: direct publish vs staged publish
+
+When configuring the trusted publisher, npm asks whether it may run `npm publish`
+directly, or only `npm stage publish`:
+
+| Setting | Behaviour |
+| --- | --- |
+| **Allow `npm publish`** (checked) | The workflow publishes straight to the registry. This is what `release.yml` does today. |
+| **Stage only** (unchecked) | The workflow stages a release, and a maintainer confirms it on npmjs.com with 2FA before users can install it. |
+
+Stage-only is npm's strongest posture: a compromised workflow or dependency cannot
+put a version in front of users without a human approving it. Adopting it means
+changing the publish step to `npm stage publish` and adding a manual confirmation
+to the release process. Leave "Allow `npm publish`" checked until that change is
+made, or the release will fail.
+
 ### Trusted publishing (recommended)
 
 Prefer npm's trusted publishing (OIDC) over storing a long-lived token.
