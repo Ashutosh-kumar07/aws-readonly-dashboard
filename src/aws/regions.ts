@@ -82,3 +82,30 @@ export function normaliseRegions(regions: readonly string[]): string[] {
   }
   return result;
 }
+
+/** Matches an AWS region identifier such as `eu-west-1` or `ap-southeast-3`. */
+export const REGION_ID_PATTERN = /^[a-z]{2}(-[a-z]+)+-\d$/;
+
+/**
+ * Turns an S3 `LocationConstraint` into a usable region identifier.
+ *
+ * S3 predates the modern region names and still answers with the values it
+ * used at the time: `null` or an empty string for us-east-1, and the legacy
+ * aliases `EU` (eu-west-1) and `US` (us-east-1) for buckets old enough to have
+ * been created with them. Passing those through to an SDK client builds an
+ * endpoint like `s3.EU.amazonaws.com`, which resolves nowhere and shows up as
+ * a timeout rather than as the routing mistake it is.
+ *
+ * Returns undefined when the value cannot be turned into a real region, so the
+ * caller reports that honestly instead of guessing a region.
+ */
+export function regionFromLocationConstraint(
+  constraint: string | null | undefined
+): string | undefined {
+  const value = (constraint ?? '').trim();
+  if (value === '') return GLOBAL_ENDPOINT_REGION;
+  if (value === 'EU') return 'eu-west-1';
+  if (value === 'US') return GLOBAL_ENDPOINT_REGION;
+  if (REGION_IDS.has(value) || REGION_ID_PATTERN.test(value)) return value;
+  return undefined;
+}

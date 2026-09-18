@@ -244,6 +244,101 @@ describe('profile handling', () => {
   });
 });
 
+describe('request deadlines', () => {
+  /** A request that only ends when it is aborted, as a stalled socket does. */
+  const hangingClient = (onSend?: () => void) => ({
+    async send(_command: unknown, options?: { abortSignal?: AbortSignal }) {
+      onSend?.();
+      return new Promise((_resolve, reject) => {
+        options?.abortSignal?.addEventListener('abort', () => {
+          const error = new Error('aborted');
+          error.name = 'AbortError';
+          reject(error);
+        });
+      });
+    },
+    destroy() {},
+  });
+
+  it('aborts the underlying request when the deadline passes, instead of abandoning it', async () => {
+    // A request that never settles on its own: only the abort can end it.
+    let observed: AbortSignal | undefined;
+    let releasedByAbort = false;
+    const client = {
+      async send(_command: unknown, options?: { abortSignal?: AbortSignal }) {
+        observed = options?.abortSignal;
+        return new Promise((_resolve, reject) => {
+          options?.abortSignal?.addEventListener('abort', () => {
+            releasedByAbort = true;
+            const error = new Error('aborted');
+            error.name = 'AbortError';
+            reject(error);
+          });
+        });
+      },
+      destroy() {},
+    };
+
+    const layer = new AwsAccessLayer({
+      clientFactory: (() => client) as never,
+      requestTimeoutMs: 30,
+      maxRetries: 0,
+    });
+    const guarded = layer.client('s3', class {} as never, { profile: 'dev', region: 'us-east-1' });
+
+    await expect(
+      guarded.send(makeCommand('ListBuckets'), { section: 'security:s3' })
+    ).rejects.toThrow(/timed out/i);
+
+    expect(observed).toBeInstanceOf(AbortSignal);
+    // The socket is handed back rather than left checked out of the SDK's
+    // connection pool, which is what turned one slow call into an outbreak.
+    expect(releasedByAbort).toBe(true);
+    expect(observed?.aborted).toBe(true);
+  });
+
+  it('does not describe its own deadline in a way that reads as an IAM action', async () => {
+    const layer = new AwsAccessLayer({
+      clientFactory: (() => hangingClient()) as never,
+      requestTimeoutMs: 20,
+      maxRetries: 0,
+    });
+    const guarded = layer.client('s3', class {} as never, { profile: 'dev', region: 'eu-west-1' });
+
+    const error = await guarded
+      .send(makeCommand('GetBucketLocation'), { section: 'security:s3' })
+      .catch((caught: Error) => caught);
+
+    expect((error as Error).message).toContain('GetBucketLocation');
+    expect((error as Error).message).toContain('eu-west-1');
+    // `s3:GetBucketLocation` in the text would be mined back out as a missing
+    // permission, blaming IAM for a network problem.
+    expect((error as Error).message).not.toContain('s3:GetBucketLocation');
+    expect(classifyAwsError(error).missingPermission).toBeUndefined();
+  });
+
+  it('retries a timeout once, not once per configured retry', async () => {
+    let attempts = 0;
+    const client = hangingClient(() => {
+      attempts += 1;
+    });
+    const layer = new AwsAccessLayer({
+      clientFactory: (() => client) as never,
+      requestTimeoutMs: 15,
+      maxRetries: 3,
+    });
+    const guarded = layer.client('s3', class {} as never, { profile: 'dev', region: 'us-east-1' });
+
+    await expect(
+      guarded.send(makeCommand('ListBuckets'), { section: 'security:s3' })
+    ).rejects.toThrow(/timed out/i);
+
+    // One attempt plus a single retry: four 30-second waits for one call is
+    // how a slow check starts looking like a broken one.
+    expect(attempts).toBe(2);
+  });
+});
+
 describe('AWS error classification', () => {
   const cases: Array<[Error, string]> = [
     [awsError('AccessDeniedException', 'User is not authorized'), 'access-denied'],
@@ -272,6 +367,31 @@ describe('AWS error classification', () => {
       )
     ).toBe('ce:GetCostAndUsage');
     expect(extractMissingPermission('something unrelated')).toBeUndefined();
+  });
+
+  it('only reports a missing IAM action when the failure is about permissions', () => {
+    // The message names an action, but a timeout is not evidence that the
+    // action is missing — the permission may well be in place.
+    const timedOut = new Error('AWS request timed out after 30000ms (s3:GetBucketLocation)');
+    timedOut.name = 'TimeoutError';
+    expect(classifyAwsError(timedOut).kind).toBe('timeout');
+    expect(classifyAwsError(timedOut).missingPermission).toBeUndefined();
+
+    const denied = awsError(
+      'AccessDenied',
+      'User: arn:aws:iam::111122223333:user/dev is not authorized to perform: s3:GetBucketLocation'
+    );
+    expect(classifyAwsError(denied).missingPermission).toBe('s3:GetBucketLocation');
+  });
+
+  it('classifies a cross-region S3 answer as a region mismatch, not a permission problem', () => {
+    const redirect = awsError(
+      'PermanentRedirect',
+      'The bucket you are attempting to access must be addressed using the specified endpoint.',
+      301
+    );
+    expect(classifyAwsError(redirect).kind).toBe('unsupported-region');
+    expect(classifyAwsError(redirect).missingPermission).toBeUndefined();
   });
 
   it('marks throttling and service errors as retryable, permissions as not', () => {

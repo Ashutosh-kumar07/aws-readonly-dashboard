@@ -58,9 +58,15 @@ export function issueFromError(
     kind: error.kind,
     label,
     message: error.message,
+    // "needs <action>" is only shown when the failure really is a permission
+    // problem. A timeout or a region mismatch on a call that *would* need
+    // `s3:GetBucketLocation` is not evidence that the permission is missing,
+    // and saying so sends people to edit a policy that is already correct.
+    // `requiredPermission` still travels with the issue as the check's
+    // declared need.
     ...(error.missingPermission
       ? { missingPermission: error.missingPermission }
-      : scope.requiredPermission
+      : scope.requiredPermission && error.kind === 'access-denied'
         ? { missingPermission: scope.requiredPermission }
         : {}),
     ...(scope.requiredPermission ? { requiredPermission: scope.requiredPermission } : {}),

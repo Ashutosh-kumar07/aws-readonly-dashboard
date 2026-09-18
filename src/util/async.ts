@@ -76,6 +76,13 @@ export class RequestDeduplicator {
   }
 }
 
+/** The shared shape of a deadline failure, so classification stays consistent. */
+export function timeoutError(message: string): Error {
+  const error = new Error(message);
+  error.name = 'TimeoutError';
+  return error;
+}
+
 /** Rejects if the promise has not settled within `ms`. */
 export async function withTimeout<T>(
   promise: Promise<T>,
@@ -87,11 +94,7 @@ export async function withTimeout<T>(
     return await Promise.race([
       promise,
       new Promise<never>((_, reject) => {
-        timer = setTimeout(() => {
-          const error = new Error(message);
-          error.name = 'TimeoutError';
-          reject(error);
-        }, ms);
+        timer = setTimeout(() => reject(timeoutError(message)), ms);
       }),
     ]);
   } finally {

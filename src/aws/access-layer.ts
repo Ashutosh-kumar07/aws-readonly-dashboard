@@ -21,7 +21,7 @@ import {
   type ClassifiedAwsError,
 } from '../util/errors.js';
 import { logger } from '../util/logger.js';
-import { mapWithConcurrency, withRetry, withTimeout } from '../util/async.js';
+import { mapWithConcurrency, timeoutError, withRetry, withTimeout } from '../util/async.js';
 import { ApiCallTracker } from './tracker.js';
 import { assertReadOnly, operationNameOf } from './readonly-guard.js';
 import type { ApiCategory, ServiceKey } from './allowlist.js';
@@ -52,6 +52,8 @@ export interface AccessLayerOptions {
   tracker?: ApiCallTracker;
   /** Per-request timeout in milliseconds. */
   requestTimeoutMs?: number;
+  /** How many times a timed-out request may be tried again. */
+  timeoutRetries?: number;
   /** Retries for throttling/transient failures. */
   maxRetries?: number;
   /** Categories the user has disabled. Can only narrow, never widen. */
@@ -126,6 +128,7 @@ export class AwsAccessLayer {
   readonly tracker: ApiCallTracker;
   private readonly requestTimeoutMs: number;
   private readonly maxRetries: number;
+  private readonly timeoutRetries: number;
   private disabledCategories: Set<ApiCategory>;
   private readonly clients = new Map<string, SdkClientLike>();
   private readonly credentialProviders = new Map<string, AwsCredentialIdentityProvider>();
@@ -136,6 +139,10 @@ export class AwsAccessLayer {
     this.tracker = options.tracker ?? new ApiCallTracker();
     this.requestTimeoutMs = options.requestTimeoutMs ?? 30_000;
     this.maxRetries = options.maxRetries ?? 3;
+    // A timeout has already cost `requestTimeoutMs`; retrying it three times
+    // turns one slow call into two minutes of waiting, and a check that is
+    // merely slow into a check that looks broken.
+    this.timeoutRetries = options.timeoutRetries ?? 1;
     this.disabledCategories = new Set(options.disabledCategories ?? []);
     this.clientFactory =
       options.clientFactory ??
@@ -221,21 +228,21 @@ export class AwsAccessLayer {
     const accountId = this.cachedAccountId(args.profile);
     const startedAt = Date.now();
 
+    let timeouts = 0;
+
     try {
-      const output = await withRetry(
-        () =>
-          withTimeout(
-            args.client.send(args.command),
-            this.requestTimeoutMs,
-            `AWS request timed out after ${this.requestTimeoutMs}ms (${args.service}:${operation})`
-          ),
-        {
-          retries: this.maxRetries,
-          baseDelayMs: 250,
-          maxDelayMs: 5_000,
-          shouldRetry: (error) => classifyAwsError(error).retryable,
-        }
-      );
+      const output = await withRetry(() => this.sendOnce(args, operation), {
+        retries: this.maxRetries,
+        baseDelayMs: 250,
+        maxDelayMs: 5_000,
+        shouldRetry: (error) => {
+          const classified = classifyAwsError(error);
+          if (!classified.retryable) return false;
+          if (classified.kind !== 'timeout') return true;
+          timeouts += 1;
+          return timeouts <= this.timeoutRetries;
+        },
+      });
 
       this.tracker.record({
         category: entry.category,
@@ -273,6 +280,46 @@ export class AwsAccessLayer {
         code: classified.code,
       });
       throw error;
+    }
+  }
+
+  /**
+   * One attempt at a single AWS call, with a deadline that actually cancels.
+   *
+   * Racing a promise against a timer leaves the HTTP request running: the
+   * socket stays checked out of the SDK's connection pool (50 per client by
+   * default) until the server answers. Enough abandoned requests and every
+   * later call waits for a free socket and times out too, so one slow call
+   * turns into a section-wide outbreak of timeouts that looks like a
+   * permissions problem. Aborting hands the socket back immediately.
+   */
+  private async sendOnce<TOutput>(args: DispatchArgs, operation: string): Promise<TOutput> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.requestTimeoutMs);
+    // The operation is written without a colon so it cannot be mistaken for an
+    // IAM action when the message is read back.
+    const message =
+      `AWS request timed out after ${this.requestTimeoutMs}ms ` +
+      `(${operation} on ${args.service} in ${args.region})`;
+
+    try {
+      return (await withTimeout(
+        args.client
+          .send(args.command, {
+            abortSignal: controller.signal,
+            requestTimeout: this.requestTimeoutMs,
+          })
+          .catch((error: unknown) => {
+            if (controller.signal.aborted) throw timeoutError(message);
+            throw error;
+          }),
+        // A slightly later hard deadline, so a handler that ignores the abort
+        // signal still cannot hold the scan open indefinitely.
+        this.requestTimeoutMs + 1_000,
+        message
+      )) as TOutput;
+    } finally {
+      clearTimeout(timer);
     }
   }
 

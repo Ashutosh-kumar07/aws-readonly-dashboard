@@ -688,6 +688,29 @@ Check the endpoint URL, headers and response path in Settings. A configured resp
 path that does not exist in the response is reported as an error rather than being
 guessed around. Use **Preview payload** to inspect the exact request first.
 
+**S3 checks report timeouts, or say a permission is missing when it is not**
+A failed AWS call is reported by what actually failed. "Request timed out" means
+the request did not come back in time — it is not a statement about your IAM policy,
+and the dashboard no longer adds a "needs `s3:Get…`" note to one. If you see
+timeouts here:
+
+- Buckets are read one region at a time. The dashboard resolves each bucket's real
+  region first (including S3's legacy `EU` and `US` location values) and asks only
+  that region; a bucket whose region cannot be resolved is reported as *partially
+  evaluated* rather than queried in a guessed region.
+- Check **AWS API Usage** to confirm the calls are being made with the profile you
+  selected — every call is listed with its profile, account and region.
+- A corporate proxy is the usual cause of timeouts that the AWS CLI does not show:
+  the CLI honours `HTTPS_PROXY` automatically, the AWS SDK for JavaScript does not.
+- Raise the per-request deadline only if your network is genuinely slow; a timed-out
+  request is now cancelled rather than left running, so a slow endpoint no longer
+  starves later calls of connections.
+
+**A bucket is listed as "partially evaluated"**
+One of the five reads for that bucket did not return a definitive answer, so the
+dashboard will not state whether it is protected. It is never counted as secure, and
+no finding is raised from a read that failed.
+
 **Port conflicts**
 The dashboard finds the next free port automatically and prints it. Use `--port` to
 choose a different starting point.

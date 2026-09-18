@@ -9,6 +9,8 @@ import type { SdkClientLike } from '../src/aws/access-layer.js';
 export interface FakeCall {
   command: string;
   input: unknown;
+  /** The per-request options the access layer passed, e.g. the abort signal. */
+  options?: { abortSignal?: AbortSignal; requestTimeout?: number };
 }
 
 /** An SDK-shaped client whose responses are scripted per command name. */
@@ -16,14 +18,24 @@ export class FakeClient implements SdkClientLike {
   readonly calls: FakeCall[] = [];
   destroyed = false;
 
-  constructor(private readonly responses: Record<string, unknown | (() => unknown)> = {}) {}
+  constructor(
+    private readonly responses: Record<string, unknown | ((input: any) => unknown)> = {}
+  ) {}
 
-  async send(command: any): Promise<any> {
+  async send(command: any, options?: unknown): Promise<any> {
     const name = command?.constructor?.name ?? 'UnknownCommand';
-    this.calls.push({ command: name, input: command?.input });
+    this.calls.push({
+      command: name,
+      input: command?.input,
+      ...(options ? { options: options as FakeCall['options'] } : {}),
+    });
     const key = name.endsWith('Command') ? name.slice(0, -'Command'.length) : name;
     const response = this.responses[key];
-    if (typeof response === 'function') return (response as () => unknown)();
+    // Scripted responses may inspect the input, so a fixture can answer
+    // differently per bucket, per log group and so on.
+    if (typeof response === 'function') {
+      return (response as (input: unknown) => unknown)(command?.input);
+    }
     if (response instanceof Error) throw response;
     return response ?? {};
   }

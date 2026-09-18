@@ -9,6 +9,7 @@ import {
 } from '../src/aws/profiles.js';
 import {
   normaliseRegions,
+  regionFromLocationConstraint,
   isKnownRegion,
   regionLabel,
   GLOBAL_SCOPE,
@@ -148,6 +149,20 @@ describe('regions', () => {
 
   it('removes duplicates and never treats global as a region', () => {
     expect(normaliseRegions(['us-east-1', 'us-east-1', GLOBAL_SCOPE])).toEqual(['us-east-1']);
+  });
+
+  it('translates S3 location constraints, including the legacy aliases', () => {
+    // S3 predates the modern region names and still answers with what it used
+    // at the time; passing those straight to a client builds an endpoint that
+    // resolves nowhere.
+    expect(regionFromLocationConstraint(null)).toBe('us-east-1');
+    expect(regionFromLocationConstraint('')).toBe('us-east-1');
+    expect(regionFromLocationConstraint('US')).toBe('us-east-1');
+    expect(regionFromLocationConstraint('EU')).toBe('eu-west-1');
+    expect(regionFromLocationConstraint('eu-west-2')).toBe('eu-west-2');
+    expect(regionFromLocationConstraint('ap-southeast-9')).toBe('ap-southeast-9');
+    // Anything that is not a region is reported as unknown rather than guessed.
+    expect(regionFromLocationConstraint('somewhere')).toBeUndefined();
   });
 
   it('labels the global scope distinctly', () => {

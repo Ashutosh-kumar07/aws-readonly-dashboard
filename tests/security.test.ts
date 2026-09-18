@@ -15,6 +15,8 @@ import {
   describeChecks,
   runSecurityAnalysis,
 } from '../src/services/security/index.js';
+import { s3PublicAccessCheck } from '../src/services/security/checks/s3.js';
+import { GLOBAL_SCOPE } from '../src/aws/regions.js';
 import { FindingStore } from '../src/services/security/finding-store.js';
 import { fingerprint } from '../src/services/security/types.js';
 import { AwsAccessLayer } from '../src/aws/access-layer.js';
@@ -748,5 +750,138 @@ describe('the security analyzer', () => {
       expect(client.calls).toHaveLength(0);
       expect(result.data?.checks.every((check) => check.state === 'disabled')).toBe(true);
     });
+  });
+});
+
+describe('S3 bucket exposure', () => {
+  /** Builds an access layer whose S3 clients are recorded per region. */
+  function s3Layer(responses: Record<string, unknown | ((input: any) => unknown)>) {
+    const byRegion = new Map<string, FakeClient>();
+    const layer = new AwsAccessLayer({
+      maxRetries: 0,
+      clientFactory: ((_ctor: unknown, config: { region: string }) => {
+        let client = byRegion.get(config.region);
+        if (!client) {
+          client = new FakeClient(responses);
+          byRegion.set(config.region, client);
+        }
+        return client as never;
+      }) as never,
+    });
+    return { layer, byRegion };
+  }
+
+  const openBucketResponses = {
+    ListBuckets: { Buckets: [{ Name: 'legacy-eu' }] },
+    GetBucketLocation: { LocationConstraint: 'EU' },
+    GetBucketPolicyStatus: { PolicyStatus: { IsPublic: true } },
+    GetPublicAccessBlock: { PublicAccessBlockConfiguration: {} },
+    GetBucketAcl: { Grants: [] },
+    GetBucketEncryption: { ServerSideEncryptionConfiguration: {} },
+  };
+
+  it('resolves the legacy "EU" location to eu-west-1 instead of building a dead endpoint', async () => {
+    const { layer, byRegion } = s3Layer(openBucketResponses);
+
+    const result = await s3PublicAccessCheck.run(
+      context(layer, { region: GLOBAL_SCOPE, section: 'security:s3' })
+    );
+
+    // "EU" as a region produces `s3.EU.amazonaws.com`, which resolves nowhere
+    // and surfaces as a timeout rather than as the routing mistake it is.
+    expect([...byRegion.keys()].sort()).toEqual(['eu-west-1', 'us-east-1']);
+    expect(byRegion.has('EU')).toBe(false);
+    const regional = byRegion.get('eu-west-1')!;
+    expect(regional.calls.map((call) => call.command)).toContain('GetBucketPolicyStatusCommand');
+    expect(result.findings[0]?.region).toBe('eu-west-1');
+  });
+
+  it('skips a bucket whose region is unknown rather than asking the wrong region', async () => {
+    const timedOut = new Error('AWS request timed out after 30000ms (GetBucketLocation on s3)');
+    timedOut.name = 'TimeoutError';
+    const { layer, byRegion } = s3Layer({
+      ...openBucketResponses,
+      GetBucketLocation: () => {
+        throw timedOut;
+      },
+    });
+
+    const result = await s3PublicAccessCheck.run(
+      context(layer, { region: GLOBAL_SCOPE, section: 'security:s3' })
+    );
+
+    // Only the global client was used: no four further calls to a guessed
+    // region, each failing for a reason unrelated to the bucket's exposure.
+    expect([...byRegion.keys()]).toEqual(['us-east-1']);
+    const commands = byRegion.get('us-east-1')!.calls.map((call) => call.command);
+    expect(commands).not.toContain('GetBucketPolicyStatusCommand');
+
+    const timeoutIssue = result.issues.find((issue) => issue.kind === 'timeout');
+    expect(timeoutIssue?.label).toContain('timed out');
+    // The permission is not blamed for a network failure.
+    expect(timeoutIssue?.missingPermission).toBeUndefined();
+    expect(timeoutIssue?.requiredPermission).toBe('s3:GetBucketLocation');
+
+    const partial = result.issues.find((issue) => issue.label.startsWith('Partially evaluated'));
+    expect(partial?.message).toContain('legacy-eu');
+    expect(result.resourcesEvaluated).toBe(0);
+    expect(result.truncated).toBe(true);
+    // Nothing is asserted about a bucket that was never read.
+    expect(result.findings).toHaveLength(0);
+  });
+
+  it('does not report a bucket as unprotected when the Block Public Access read failed', async () => {
+    const { layer } = s3Layer({
+      ...openBucketResponses,
+      GetBucketLocation: { LocationConstraint: 'eu-west-1' },
+      GetBucketPolicyStatus: { PolicyStatus: { IsPublic: false } },
+      GetPublicAccessBlock: () => {
+        throw awsError('ThrottlingException', 'Rate exceeded');
+      },
+    });
+
+    const result = await s3PublicAccessCheck.run(
+      context(layer, { region: GLOBAL_SCOPE, section: 'security:s3' })
+    );
+
+    // "AWS did not answer" is not evidence that the bucket is exposed.
+    expect(
+      result.findings.filter((finding) => finding.title.includes('Block Public Access'))
+    ).toHaveLength(0);
+    expect(result.issues.some((issue) => issue.label.startsWith('Partially evaluated'))).toBe(true);
+    expect(result.resourcesEvaluated).toBe(0);
+  });
+
+  it('reports a public bucket policy as critical when every read succeeded', async () => {
+    const { layer } = s3Layer({
+      ...openBucketResponses,
+      GetBucketLocation: { LocationConstraint: 'eu-west-1' },
+    });
+
+    const result = await s3PublicAccessCheck.run(
+      context(layer, { region: GLOBAL_SCOPE, section: 'security:s3' })
+    );
+
+    const finding = result.findings.find((entry) => entry.severity === 'critical');
+    expect(finding?.title).toContain('public through its bucket policy');
+    expect(finding?.region).toBe('eu-west-1');
+    expect(result.resourcesEvaluated).toBe(1);
+    expect(result.truncated).toBe(false);
+  });
+
+  it('uses the selected profile for every bucket call, including the regional ones', async () => {
+    const profiles: string[] = [];
+    const layer = new AwsAccessLayer({
+      maxRetries: 0,
+      clientFactory: (() => new FakeClient(openBucketResponses) as never) as never,
+    });
+
+    await s3PublicAccessCheck.run(
+      context(layer, { profile: 'dev', region: GLOBAL_SCOPE, section: 'security:s3' })
+    );
+
+    for (const call of layer.tracker.snapshot().recentCalls) profiles.push(call.profile);
+    expect(profiles.length).toBeGreaterThan(1);
+    expect(new Set(profiles)).toEqual(new Set(['dev']));
   });
 });

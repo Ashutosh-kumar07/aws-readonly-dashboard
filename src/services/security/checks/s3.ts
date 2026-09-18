@@ -29,7 +29,7 @@ import {
 
 import { classifyAwsError } from '../../../util/errors.js';
 import { mapWithConcurrency } from '../../../util/async.js';
-import { GLOBAL_ENDPOINT_REGION, GLOBAL_SCOPE } from '../../../aws/regions.js';
+import { GLOBAL_SCOPE, regionFromLocationConstraint } from '../../../aws/regions.js';
 import { buildFinding, type CheckContext, type CheckResult, type SecurityCheck } from '../types.js';
 import { evaluated, issueFor, notEvaluated } from '../check-utils.js';
 import type { EvaluationIssue } from '../../types.js';
@@ -157,6 +157,19 @@ interface BucketAssessment {
   encryption?: 'enabled' | 'none';
 }
 
+/**
+ * Which of a bucket's reads produced a definitive answer. A finding may only
+ * be raised from reads that actually completed: "AWS did not answer" is not
+ * evidence that a bucket is unprotected, and reporting it as though it were
+ * manufactures a finding out of a failure.
+ */
+interface BucketReads {
+  policyStatus: boolean;
+  acl: boolean;
+  publicAccessBlock: boolean;
+  encryption: boolean;
+}
+
 export const s3PublicAccessCheck: SecurityCheck = {
   id: CHECK_ID,
   title: 'Publicly accessible S3 buckets',
@@ -204,6 +217,8 @@ export const s3PublicAccessCheck: SecurityCheck = {
     const issues: EvaluationIssue[] = [];
     const findings: CheckResult['findings'] = [];
     const deniedPermissions = new Set<string>();
+    /** Buckets whose evaluation is incomplete, and why. Never silently dropped. */
+    const incomplete: Array<{ bucket: string; reason: string }> = [];
 
     const recordIssue = (
       error: unknown,
@@ -228,15 +243,29 @@ export const s3PublicAccessCheck: SecurityCheck = {
     };
 
     await mapWithConcurrency(inspected, 8, async (bucket) => {
-      let region = GLOBAL_ENDPOINT_REGION;
+      let region: string;
       try {
         const location = await globalClient.send<GetBucketLocationCommandOutput>(
           new GetBucketLocationCommand({ Bucket: bucket }),
           { section: context.section }
         );
-        region = location.LocationConstraint || GLOBAL_ENDPOINT_REGION;
+        const resolved = regionFromLocationConstraint(location.LocationConstraint);
+        if (!resolved) {
+          incomplete.push({
+            bucket,
+            reason: `AWS reported the location as "${String(location.LocationConstraint)}", which is not a region this tool recognises.`,
+          });
+          return;
+        }
+        region = resolved;
       } catch (error) {
         recordIssue(error, 's3:GetBucketLocation', 'resolving bucket region', bucket);
+        // Without the bucket's region there is nowhere correct to ask. Guessing
+        // one sends four more requests to the wrong endpoint, each of which
+        // fails for a reason that has nothing to do with the bucket's exposure
+        // and reads like a separate permission problem.
+        incomplete.push({ bucket, reason: classifyAwsError(error).message });
+        return;
       }
 
       const regional = context.access.client('s3', S3Client, {
@@ -244,6 +273,12 @@ export const s3PublicAccessCheck: SecurityCheck = {
         region,
       });
       const assessment: BucketAssessment = { name: bucket, region };
+      const reads: BucketReads = {
+        policyStatus: false,
+        acl: false,
+        publicAccessBlock: false,
+        encryption: false,
+      };
 
       try {
         const status = await regional.send<GetBucketPolicyStatusCommandOutput>(
@@ -251,12 +286,17 @@ export const s3PublicAccessCheck: SecurityCheck = {
           { section: context.section }
         );
         assessment.isPublicByPolicy = status.PolicyStatus?.IsPublic === true;
+        reads.policyStatus = true;
       } catch (error) {
         const classified = classifyAwsError(error);
         if (classified.kind !== 'not-found') {
           recordIssue(error, 's3:GetBucketPolicyStatus', 'reading bucket policy status', bucket);
+          incomplete.push({ bucket, reason: `policy status: ${classified.message}` });
         } else {
+          // No policy at all is a definitive answer: the bucket is not public
+          // by policy.
           assessment.isPublicByPolicy = false;
+          reads.policyStatus = true;
         }
       }
 
@@ -266,16 +306,22 @@ export const s3PublicAccessCheck: SecurityCheck = {
           { section: context.section }
         );
         assessment.publicAccessBlock = pab.PublicAccessBlockConfiguration ?? null;
+        reads.publicAccessBlock = true;
       } catch (error) {
         const classified = classifyAwsError(error);
-        if (classified.kind === 'not-found') assessment.publicAccessBlock = null;
-        else
+        if (classified.kind === 'not-found') {
+          // No configuration is itself the answer: nothing is blocked.
+          assessment.publicAccessBlock = null;
+          reads.publicAccessBlock = true;
+        } else {
           recordIssue(
             error,
             's3:GetBucketPublicAccessBlock',
             'reading Block Public Access',
             bucket
           );
+          incomplete.push({ bucket, reason: `Block Public Access: ${classified.message}` });
+        }
       }
 
       try {
@@ -292,8 +338,10 @@ export const s3PublicAccessCheck: SecurityCheck = {
             (grant) =>
               `${grant.Grantee?.URI === ALL_USERS_URI ? 'AllUsers' : 'AuthenticatedUsers'}:${grant.Permission}`
           );
+        reads.acl = true;
       } catch (error) {
         recordIssue(error, 's3:GetBucketAcl', 'reading bucket ACL', bucket);
+        incomplete.push({ bucket, reason: `ACL: ${classifyAwsError(error).message}` });
       }
 
       try {
@@ -302,11 +350,16 @@ export const s3PublicAccessCheck: SecurityCheck = {
           { section: context.section }
         );
         assessment.encryption = 'enabled';
+        reads.encryption = true;
       } catch (error) {
         const classified = classifyAwsError(error);
-        if (classified.kind === 'not-found') assessment.encryption = 'none';
-        else
+        if (classified.kind === 'not-found') {
+          assessment.encryption = 'none';
+          reads.encryption = true;
+        } else {
           recordIssue(error, 's3:GetEncryptionConfiguration', 'reading default encryption', bucket);
+          incomplete.push({ bucket, reason: `default encryption: ${classified.message}` });
+        }
       }
 
       const pab = assessment.publicAccessBlock;
@@ -316,7 +369,7 @@ export const s3PublicAccessCheck: SecurityCheck = {
         pab?.BlockPublicPolicy === true &&
         pab?.RestrictPublicBuckets === true;
 
-      if (assessment.isPublicByPolicy) {
+      if (reads.policyStatus && assessment.isPublicByPolicy) {
         findings.push(
           buildFinding({
             context,
@@ -342,7 +395,7 @@ export const s3PublicAccessCheck: SecurityCheck = {
         );
       }
 
-      if (assessment.publicAcl && assessment.publicAcl.length > 0) {
+      if (reads.acl && assessment.publicAcl && assessment.publicAcl.length > 0) {
         findings.push(
           buildFinding({
             context,
@@ -363,7 +416,13 @@ export const s3PublicAccessCheck: SecurityCheck = {
         );
       }
 
+      // "Not public today, but nothing stops it becoming public" is a claim
+      // about all three controls at once, so it needs all three reads. With any
+      // of them missing the bucket is reported as incomplete above instead.
       if (
+        reads.publicAccessBlock &&
+        reads.policyStatus &&
+        reads.acl &&
         !fullyBlocked &&
         !assessment.isPublicByPolicy &&
         (assessment.publicAcl?.length ?? 0) === 0
@@ -388,7 +447,7 @@ export const s3PublicAccessCheck: SecurityCheck = {
         );
       }
 
-      if (assessment.encryption === 'none') {
+      if (reads.encryption && assessment.encryption === 'none') {
         findings.push(
           buildFinding({
             context,
@@ -410,8 +469,30 @@ export const s3PublicAccessCheck: SecurityCheck = {
       }
     });
 
-    const truncated = bucketNames.length > inspected.length;
-    if (truncated) {
+    // Buckets that could not be fully inspected are named, with the reason, so
+    // an incomplete scan is visibly incomplete rather than quietly thinner.
+    const incompleteBuckets = [...new Set(incomplete.map((entry) => entry.bucket))];
+    if (incompleteBuckets.length > 0) {
+      const first = incomplete[0];
+      issues.push({
+        profile: context.profile,
+        ...(context.accountId ? { accountId: context.accountId } : {}),
+        region: GLOBAL_SCOPE,
+        service: 'S3',
+        check: CHECK_ID,
+        kind: 'unknown',
+        label: `Partially evaluated — ${incompleteBuckets.length} of ${inspected.length} buckets could not be fully inspected`,
+        message:
+          `These buckets were skipped or only partly read, so they are not reported as secure: ${incompleteBuckets
+            .slice(0, 10)
+            .join(', ')}${incompleteBuckets.length > 10 ? ', …' : ''}. ` +
+          (first ? `First reason — ${first.bucket}: ${first.reason}` : ''),
+      });
+    }
+
+    const limitReached = bucketNames.length > inspected.length;
+    const truncated = limitReached || incompleteBuckets.length > 0;
+    if (limitReached) {
       issues.push({
         profile: context.profile,
         ...(context.accountId ? { accountId: context.accountId } : {}),
@@ -429,8 +510,10 @@ export const s3PublicAccessCheck: SecurityCheck = {
     return {
       findings,
       issues,
+      // The check ran; `resourcesEvaluated` counts only the buckets it could
+      // actually answer for.
       evaluated: true,
-      resourcesEvaluated: inspected.length,
+      resourcesEvaluated: inspected.length - incompleteBuckets.length,
       truncated,
     };
   },

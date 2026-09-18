@@ -108,6 +108,17 @@ const UNAVAILABLE_CODES = new Set([
   'InternalServerErrorException',
 ]);
 
+/**
+ * The bucket (or resource) lives in a different region than the client used.
+ * S3 answers a cross-region request with a 301 and no body, which is a routing
+ * problem, not a permission one.
+ */
+const REGION_MISMATCH_CODES = new Set([
+  'PermanentRedirect',
+  'AuthorizationHeaderMalformed',
+  'IllegalLocationConstraintException',
+]);
+
 const TIMEOUT_CODES = new Set([
   'TimeoutError',
   'RequestTimeout',
@@ -145,9 +156,19 @@ export function classifyAwsError(error: unknown): ClassifiedAwsError {
   const code = extractCode(err);
   const rawMessage: string = err?.message ?? String(error);
   const statusCode: number | undefined = err?.$metadata?.httpStatusCode;
-  const missingPermission = extractMissingPermission(rawMessage);
 
-  const base = { code, statusCode, missingPermission };
+  // A missing IAM action is only ever read out of a message AWS sent us about
+  // permissions. Mining every message for an `service:Action` pattern turned
+  // timeouts and internal diagnostics into invented "needs s3:GetBucketLocation"
+  // advice, which sent people to fix an IAM policy that was already correct.
+  const looksLikePermissionFailure =
+    (code !== undefined && (ACCESS_DENIED_CODES.has(code) || AUTH_CODES.has(code))) ||
+    statusCode === 403;
+  const missingPermission = looksLikePermissionFailure
+    ? extractMissingPermission(rawMessage)
+    : undefined;
+
+  const base = { code, statusCode, ...(missingPermission ? { missingPermission } : {}) };
 
   if (code && ACCESS_DENIED_CODES.has(code)) {
     return {
@@ -186,6 +207,16 @@ export function classifyAwsError(error: unknown): ClassifiedAwsError {
   }
   if (code && TIMEOUT_CODES.has(code)) {
     return { ...base, kind: 'timeout', retryable: true, message: rawMessage };
+  }
+  if (code && REGION_MISMATCH_CODES.has(code)) {
+    return {
+      ...base,
+      kind: 'unsupported-region',
+      retryable: false,
+      message:
+        rawMessage ||
+        'AWS answered that this resource must be addressed in the region it actually lives in.',
+    };
   }
   if (statusCode === 403) {
     return { ...base, kind: 'access-denied', retryable: false, message: rawMessage };

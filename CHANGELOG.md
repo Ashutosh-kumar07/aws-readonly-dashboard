@@ -28,9 +28,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `PATH`/`PATHEXT` lookup, an explicit refusal for commands containing shell
   metacharacters, and `ENOENT`/`EACCES`-specific guidance.
 - Dependabot configuration for GitHub Actions and npm dependencies.
-- 44 new tests (299 total), covering the job runner, cancellation and Gemini CLI
-  detection, including Windows `.cmd` resolution and an oversized-prompt
-  argument-length check.
+- 55 new tests (310 total), covering the job runner, cancellation, Gemini CLI
+  detection and the S3 region and permission-reporting fixes, including Windows
+  `.cmd` resolution and an oversized-prompt argument-length check.
 
 ### Fixed
 
@@ -47,6 +47,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Section progress could display a nonsensical ratio (`23 / 1`) when per-check and
   per-profile units were summed. Progress is now an absolute position aggregated per
   profile.
+- **S3 checks reported timeouts as missing permissions.** A timed-out request was
+  labelled "needs `s3:GetBucketLocation`" — the classifier read the IAM-shaped
+  `service:Operation` out of the dashboard's own timeout message. A missing action is
+  now only reported when AWS says the failure was about permissions, and the internal
+  message no longer looks like an IAM action.
+- **A timed-out request is now cancelled, not abandoned.** The deadline raced a timer
+  and left the HTTP request running, so the socket stayed checked out of the SDK's
+  connection pool (50 per client). Enough abandoned requests and every later call
+  waited for a free socket and timed out too — one slow endpoint became a
+  section-wide outbreak of timeouts that read as a permissions problem. Verified
+  against the real SDK: the socket is released the moment the deadline passes.
+- A timeout is retried once rather than once per configured retry, so one slow call
+  costs seconds rather than minutes.
+- **S3's legacy location values are translated.** `GetBucketLocation` answers `EU`
+  for older buckets, which was passed straight to a client and built the unroutable
+  endpoint `s3.EU.amazonaws.com`. `EU`, `US` and the empty value now map to real
+  regions, and an unrecognised value is reported rather than guessed.
+- A bucket whose region cannot be resolved is no longer queried in a guessed region.
+  Four further calls to the wrong endpoint produced four more failures, each unrelated
+  to the bucket's exposure and each displayed as its own permission gap.
+- **A failed read can no longer become a finding.** When `GetPublicAccessBlock`
+  failed, the bucket was reported as "does not have full Block Public Access" — a
+  claim about a setting the dashboard had not managed to read. Findings now require
+  the reads they rest on; anything else is reported as partially evaluated, naming
+  the buckets and the reason.
+- A cross-region S3 answer (`PermanentRedirect`) is classified as a region mismatch
+  instead of an unexpected error.
 
 ### Changed
 
