@@ -81,6 +81,7 @@ export async function startServer(options: StartServerOptions = {}): Promise<Sta
 
   const access = new AwsAccessLayer({
     disabledCategories: config.disabledApiCategories as ApiCategory[],
+    requestTimeoutMs: config.awsRequestTimeoutMs,
   });
 
   const findings = new FindingStore(configService.paths.findingsFile);

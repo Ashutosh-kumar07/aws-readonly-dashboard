@@ -53,6 +53,13 @@ will not be merged, however convenient it is.
    arguments with spaces, so `['-p', 'two words']` reaches the program as a flag
    plus two positional arguments.
 
+10. **Listings are paged, and a partial listing is still a result.** Never ask an AWS
+    list API for an unbounded inventory: pass an explicit page size and follow the
+    continuation token, stopping when the configured limit is reached. If a later
+    page fails, evaluate what was listed and report the rest as partially
+    evaluated — the alternative is an all-or-nothing failure that leaves the user
+    with nothing.
+
 ## Long-running sections
 
 Sections that can take more than a few seconds stream their results:

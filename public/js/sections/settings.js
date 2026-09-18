@@ -533,8 +533,8 @@ function historyCard(state, actions) {
 function scanLimitsCard(state, actions) {
   const security = state.config?.security ?? {};
   return card(
-    'Security scan limits',
-    'These bound how many resources a scan inspects, which directly bounds how many AWS API calls it makes. Anything not inspected is reported as partially evaluated — never as clean.',
+    'Scan limits and AWS requests',
+    'These bound how many resources a scan inspects, which directly bounds how many AWS API calls it makes, and how long any single request may take. Anything not inspected is reported as partially evaluated — never as clean.',
     [
       el('div', { class: 'filters' }, [
         el('div', { class: 'field' }, [
@@ -565,7 +565,7 @@ function scanLimitsCard(state, actions) {
             class: 'input',
             id: 'limit-buckets',
             type: 'number',
-            min: '1',
+            min: '0',
             max: '10000',
             step: '25',
             value: String(security.maxBucketsPerScan ?? 250),
@@ -578,7 +578,28 @@ function scanLimitsCard(state, actions) {
           }),
           el('p', {
             class: 'subtle',
-            text: 'Up to five read calls per bucket. Anything beyond the limit is reported as partially evaluated, never as clean.',
+            text: 'Up to five read calls per bucket. 0 means no limit — every bucket is inspected. Anything beyond the limit is reported as partially evaluated, never as clean.',
+          }),
+        ]),
+        el('div', { class: 'field' }, [
+          el('label', { for: 'aws-timeout', text: 'AWS request timeout (seconds)' }),
+          el('input', {
+            class: 'input',
+            id: 'aws-timeout',
+            type: 'number',
+            min: '5',
+            max: '120',
+            step: '5',
+            value: String(Math.round((state.config?.awsRequestTimeoutMs ?? 30000) / 1000)),
+            onChange: async (event) => {
+              await actions.persist({
+                awsRequestTimeoutMs: Math.round(Number(event.target.value) * 1000),
+              });
+            },
+          }),
+          el('p', {
+            class: 'subtle',
+            text: 'How long a single AWS request may take before it is cancelled. Raise it on a slow or proxied network; a cancelled request is reported, never counted as a pass.',
           }),
         ]),
         el('div', { class: 'field' }, [

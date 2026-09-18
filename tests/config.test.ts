@@ -147,6 +147,22 @@ describe('configuration normalisation', () => {
   });
 });
 
+describe('AWS request deadline', () => {
+  it('defaults to 30 seconds and stays within sane bounds', () => {
+    expect(defaultConfig().awsRequestTimeoutMs).toBe(30_000);
+    expect(normaliseConfig({ awsRequestTimeoutMs: 90_000 }).awsRequestTimeoutMs).toBe(90_000);
+    expect(normaliseConfig({ awsRequestTimeoutMs: 1 }).awsRequestTimeoutMs).toBe(5_000);
+    expect(normaliseConfig({ awsRequestTimeoutMs: 999_999 }).awsRequestTimeoutMs).toBe(120_000);
+    expect(normaliseConfig({ awsRequestTimeoutMs: 'soon' }).awsRequestTimeoutMs).toBe(30_000);
+  });
+
+  it('accepts 0 buckets per scan as "no limit"', () => {
+    expect(normaliseConfig({ security: { maxBucketsPerScan: 0 } }).security.maxBucketsPerScan).toBe(
+      0
+    );
+  });
+});
+
 describe('configuration migration', () => {
   it('migrates an unversioned document up to the current version', () => {
     const { config, migratedFrom } = migrateConfig({ billing: { dollarThreshold: 42 } });

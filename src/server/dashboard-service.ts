@@ -82,6 +82,7 @@ export class DashboardService {
   ) {
     configService.onChange((config) => {
       this.access.setDisabledCategories(config.disabledApiCategories as ApiCategory[]);
+      this.access.setRequestTimeout(config.awsRequestTimeoutMs);
     });
   }
 

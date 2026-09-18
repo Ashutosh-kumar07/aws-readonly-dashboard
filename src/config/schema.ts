@@ -147,6 +147,12 @@ export interface AppConfig {
   ui: UiConfig;
   /** API categories the user disabled. Narrows the allowlist; never widens it. */
   disabledApiCategories: ApiCategory[];
+  /**
+   * Deadline for a single AWS request. A slow network or a very large listing
+   * needs a longer one; the default is deliberately short so a stalled request
+   * fails visibly instead of hanging the section.
+   */
+  awsRequestTimeoutMs: number;
 }
 
 export const DEFAULT_SANITIZATION_RULES: readonly SanitizationRule[] = Object.freeze([
@@ -301,6 +307,7 @@ export function defaultConfig(): AppConfig {
       autoOpenBrowser: true,
     },
     disabledApiCategories: [],
+    awsRequestTimeoutMs: 30_000,
   };
 }
 
@@ -434,6 +441,12 @@ export function normaliseConfig(raw: unknown): AppConfig {
   const provider = input.ai?.provider === 'custom' ? 'custom' : 'gemini';
 
   const disabledApiCategories = (asStringArray(input.disabledApiCategories) ?? []) as ApiCategory[];
+  const awsRequestTimeoutMs = clamp(
+    input.awsRequestTimeoutMs,
+    5_000,
+    120_000,
+    base.awsRequestTimeoutMs
+  );
 
   return {
     version: CONFIG_VERSION,
@@ -519,9 +532,10 @@ export function normaliseConfig(raw: unknown): AppConfig {
         10_000,
         base.security.maxLambdaPolicyLookupsPerRegion
       ),
+      // 0 means no limit, matching the Lambda lookup setting.
       maxBucketsPerScan: clamp(
         input.security?.maxBucketsPerScan,
-        1,
+        0,
         10_000,
         base.security.maxBucketsPerScan
       ),
@@ -587,6 +601,7 @@ export function normaliseConfig(raw: unknown): AppConfig {
       autoOpenBrowser: input.ui?.autoOpenBrowser !== false,
     },
     disabledApiCategories,
+    awsRequestTimeoutMs,
   };
 }
 

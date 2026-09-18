@@ -705,6 +705,20 @@ Every "unable to evaluate" row now prints the underlying message underneath it. 
 row still says only *unexpected error*, the message beneath it is what AWS or the
 dashboard actually reported; include that line in a bug report.
 
+**“ListBuckets on s3 in global” times out**
+Fixed in 1.3.0. Without a page size, S3 assembles the account's entire bucket
+inventory into one response, which on a large account takes longer than the request
+deadline — so the check failed before examining a single bucket. The listing is now
+paged (1,000 buckets per request, stopping as soon as the scan limit is reached), and
+each bucket's region comes from the listing itself, which also removes one
+`GetBucketLocation` call per bucket.
+
+If a listing still times out, the message says how far it got — `page 2, 1000 buckets
+so far`. *Page 1, 0 buckets* means the request never got an answer at all, which is a
+network or proxy problem rather than a size one. Raise **Settings → Scan limits and
+AWS requests → AWS request timeout** for a slow network, and see **AWS API Usage →
+Slowest calls** for which requests are near the limit.
+
 **S3 checks report timeouts, or say a permission is missing when it is not**
 A failed AWS call is reported by what actually failed. "Request timed out" means
 the request did not come back in time — it is not a statement about your IAM policy,
@@ -739,6 +753,12 @@ no finding is raised from a read that failed.
 **Port conflicts**
 The dashboard finds the next free port automatically and prints it. Use `--port` to
 choose a different starting point.
+
+**Diagnosing anything else**
+Start the dashboard with `--log-level debug` and every AWS call is logged with its
+service, operation, region, profile and duration; listings also log the page they
+reached. Any call slower than 10 seconds is logged as a warning at the default log
+level, before it becomes a timeout.
 
 **High AWS API call counts**
 Open **AWS API Usage** to see exactly which category is responsible. The usual

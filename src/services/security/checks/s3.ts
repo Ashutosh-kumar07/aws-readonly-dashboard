@@ -36,8 +36,19 @@ import type { EvaluationIssue } from '../../types.js';
 
 const CHECK_ID = 's3-public-access';
 const ACCOUNT_CHECK_ID = 's3-account-public-access-block';
-/** Default bucket cap, overridden by `security.maxBucketsPerScan`. */
+/** Default bucket cap, overridden by `security.maxBucketsPerScan`. 0 means no cap. */
 const DEFAULT_MAX_BUCKETS = 250;
+
+/**
+ * Buckets per `ListBuckets` request.
+ *
+ * Without `MaxBuckets`, S3 assembles the account's entire bucket inventory into
+ * a single response, which on a large account takes longer than any sensible
+ * request deadline — the listing then fails before a single bucket has been
+ * examined. Asking for pages keeps each request small and lets the scan stop as
+ * soon as it has the buckets it is allowed to inspect.
+ */
+const BUCKET_PAGE_SIZE = 1000;
 
 const ALL_USERS_URI = 'http://acs.amazonaws.com/groups/global/AllUsers';
 const AUTHENTICATED_USERS_URI = 'http://acs.amazonaws.com/groups/global/AuthenticatedUsers';
@@ -192,28 +203,57 @@ export const s3PublicAccessCheck: SecurityCheck = {
       region: GLOBAL_SCOPE,
     });
 
-    let bucketNames: string[];
-    try {
-      const output = await globalClient.send<ListBucketsCommandOutput>(new ListBucketsCommand({}), {
-        section: context.section,
-      });
-      bucketNames = (output.Buckets ?? [])
-        .map((bucket) => bucket.Name)
-        .filter((name): name is string => Boolean(name));
-    } catch (error) {
+    const scanLimit = context.config.security.maxBucketsPerScan ?? DEFAULT_MAX_BUCKETS;
+    /** Listed buckets, with the region S3 reported for each where it did. */
+    const listed: Array<{ name: string; region?: string }> = [];
+    let continuationToken: string | undefined;
+    let listingError: unknown;
+    let page = 0;
+
+    do {
+      page += 1;
+      const remaining = scanLimit === 0 ? BUCKET_PAGE_SIZE : scanLimit - listed.length;
+      try {
+        const output = await globalClient.send<ListBucketsCommandOutput>(
+          new ListBucketsCommand({
+            MaxBuckets: Math.max(1, Math.min(BUCKET_PAGE_SIZE, remaining)),
+            ...(continuationToken ? { ContinuationToken: continuationToken } : {}),
+          }),
+          {
+            section: context.section,
+            // Named in a deadline message, so a timeout says how far it got.
+            detail: `page ${page}, ${listed.length} buckets so far`,
+          }
+        );
+        for (const bucket of output.Buckets ?? []) {
+          if (!bucket.Name) continue;
+          listed.push({
+            name: bucket.Name,
+            // S3 reports each bucket's region here, which saves one
+            // GetBucketLocation call per bucket.
+            ...(bucket.BucketRegion ? { region: bucket.BucketRegion } : {}),
+          });
+        }
+        continuationToken = output.ContinuationToken;
+      } catch (error) {
+        listingError = error;
+        break;
+      }
+    } while (continuationToken && (scanLimit === 0 || listed.length < scanLimit));
+
+    // Nothing listed at all: there is no partial answer to give.
+    if (listingError && listed.length === 0) {
       return notEvaluated([
-        issueFor(context, error, {
+        issueFor(context, listingError, {
           service: 'S3',
           check: CHECK_ID,
           requiredPermission: 's3:ListAllMyBuckets',
+          detail: `listing buckets, page ${page}`,
         }),
       ]);
     }
 
-    const inspected = bucketNames.slice(
-      0,
-      context.config.security.maxBucketsPerScan ?? DEFAULT_MAX_BUCKETS
-    );
+    const inspected = scanLimit === 0 ? listed : listed.slice(0, scanLimit);
     const issues: EvaluationIssue[] = [];
     const findings: CheckResult['findings'] = [];
     const deniedPermissions = new Set<string>();
@@ -242,22 +282,30 @@ export const s3PublicAccessCheck: SecurityCheck = {
       );
     };
 
-    await mapWithConcurrency(inspected, 8, async (bucket) => {
+    await mapWithConcurrency(inspected, 8, async (entry) => {
+      const bucket = entry.name;
       let region: string;
+      // The listing already reported the region for most buckets, which saves a
+      // GetBucketLocation call for every one of them.
+      const listedRegion = entry.region ? regionFromLocationConstraint(entry.region) : undefined;
       try {
-        const location = await globalClient.send<GetBucketLocationCommandOutput>(
-          new GetBucketLocationCommand({ Bucket: bucket }),
-          { section: context.section }
-        );
-        const resolved = regionFromLocationConstraint(location.LocationConstraint);
-        if (!resolved) {
-          incomplete.push({
-            bucket,
-            reason: `AWS reported the location as "${String(location.LocationConstraint)}", which is not a region this tool recognises.`,
-          });
-          return;
+        if (listedRegion) {
+          region = listedRegion;
+        } else {
+          const location = await globalClient.send<GetBucketLocationCommandOutput>(
+            new GetBucketLocationCommand({ Bucket: bucket }),
+            { section: context.section }
+          );
+          const resolved = regionFromLocationConstraint(location.LocationConstraint);
+          if (!resolved) {
+            incomplete.push({
+              bucket,
+              reason: `AWS reported the location as "${String(location.LocationConstraint)}", which is not a region this tool recognises.`,
+            });
+            return;
+          }
+          region = resolved;
         }
-        region = resolved;
       } catch (error) {
         recordIssue(error, 's3:GetBucketLocation', 'resolving bucket region', bucket);
         // Without the bucket's region there is nowhere correct to ask. Guessing
@@ -490,9 +538,24 @@ export const s3PublicAccessCheck: SecurityCheck = {
       });
     }
 
-    const limitReached = bucketNames.length > inspected.length;
-    const truncated = limitReached || incompleteBuckets.length > 0;
-    if (limitReached) {
+    // The listing is paginated, so the account's full bucket count is only
+    // known when the last page was reached: "more exist" is what can honestly
+    // be said, and the counts never imply a total that was never counted.
+    const moreBucketsExist = Boolean(continuationToken) || listed.length > inspected.length;
+    const truncated = moreBucketsExist || Boolean(listingError) || incompleteBuckets.length > 0;
+
+    if (listingError) {
+      issues.push(
+        issueFor(context, listingError, {
+          service: 'S3',
+          check: CHECK_ID,
+          requiredPermission: 's3:ListAllMyBuckets',
+          detail: `listing buckets, page ${page} — ${listed.length} listed before it failed`,
+        })
+      );
+    }
+
+    if (moreBucketsExist) {
       issues.push({
         profile: context.profile,
         ...(context.accountId ? { accountId: context.accountId } : {}),
@@ -500,14 +563,14 @@ export const s3PublicAccessCheck: SecurityCheck = {
         service: 'S3',
         check: CHECK_ID,
         kind: 'unknown',
-        label: `Partially evaluated — ${inspected.length} of ${bucketNames.length} buckets inspected`,
+        label: `Partially evaluated — ${inspected.length} buckets inspected, more exist`,
         message:
-          `${bucketNames.length - inspected.length} bucket(s) were not examined, because the scan limit was reached. ` +
+          `The account has more buckets than the scan limit of ${scanLimit}, so the rest were not examined. ` +
           'Inspecting them all costs up to five read calls per bucket; results appear as the scan runs.',
         suggestion: {
           setting: 'maxBucketsPerScan',
-          value: bucketNames.length,
-          label: `Inspect all ${bucketNames.length} buckets`,
+          value: 0,
+          label: 'Inspect every bucket',
         },
       });
     }

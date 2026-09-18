@@ -321,6 +321,40 @@ describe('request deadlines', () => {
     expect(classifyAwsError(error).missingPermission).toBeUndefined();
   });
 
+  it('says how far the work had got when the deadline passed', async () => {
+    const layer = new AwsAccessLayer({
+      clientFactory: (() => hangingClient()) as never,
+      requestTimeoutMs: 20,
+      maxRetries: 0,
+    });
+    const guarded = layer.client('s3', class {} as never, { profile: 'dev', region: 'global' });
+
+    const error = await guarded
+      .send(makeCommand('ListBuckets'), {
+        section: 'security:s3',
+        detail: 'page 2, 1000 buckets so far',
+      })
+      .catch((caught: Error) => caught);
+
+    // "It timed out" says nothing about whether the account is large or the
+    // endpoint is unreachable; the progress does.
+    expect((error as Error).message).toContain('page 2, 1000 buckets so far');
+  });
+
+  it('applies a new request deadline when configuration changes', async () => {
+    const layer = new AwsAccessLayer({
+      clientFactory: (() => hangingClient()) as never,
+      requestTimeoutMs: 60_000,
+      maxRetries: 0,
+    });
+    layer.setRequestTimeout(25);
+    const guarded = layer.client('s3', class {} as never, { profile: 'dev', region: 'us-east-1' });
+
+    await expect(
+      guarded.send(makeCommand('ListBuckets'), { section: 'security:s3' })
+    ).rejects.toThrow(/timed out after 25ms/);
+  });
+
   it('retries a timeout once, not once per configured retry', async () => {
     let attempts = 0;
     const client = hangingClient(() => {

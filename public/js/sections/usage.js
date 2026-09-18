@@ -112,6 +112,45 @@ export function renderUsage({ state, actions }) {
     ])
   );
 
+  // Slow calls are what a timeout looks like before it becomes one, so they are
+  // worth seeing on their own rather than hunting for them among the rest.
+  const slowest = [...usage.recentCalls]
+    .sort((a, b) => b.durationMs - a.durationMs)
+    .slice(0, 10)
+    .filter((call) => call.durationMs > 0);
+
+  if (slowest.length > 0) {
+    container.append(
+      el('div', { class: 'card' }, [
+        el('div', { class: 'card__header' }, [
+          el('h3', { class: 'card__title', text: 'Slowest calls' }),
+          el('p', {
+            class: 'card__hint',
+            text: 'The longest requests in this session. A call approaching the AWS request timeout in Settings is the one to look at when a section reports a timeout.',
+          }),
+        ]),
+        table({
+          columns: [
+            {
+              label: 'Operation',
+              render: (row) =>
+                el('span', { class: 'mono', text: `${row.service}:${row.operation}` }),
+            },
+            { label: 'Region', key: 'region' },
+            { label: 'Profile', key: 'profile' },
+            { label: 'Triggered by', key: 'section' },
+            {
+              label: 'Duration',
+              numeric: true,
+              render: (row) => `${number(row.durationMs)} ms`,
+            },
+          ],
+          rows: slowest,
+        }),
+      ])
+    );
+  }
+
   container.append(
     el('div', { class: 'card' }, [
       el('div', { class: 'card__header' }, [

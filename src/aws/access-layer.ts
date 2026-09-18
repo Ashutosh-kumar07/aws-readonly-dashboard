@@ -46,6 +46,12 @@ export interface CallContext {
   section: string;
   /** Override the derived operation name (defensive; normally inferred). */
   operation?: string;
+  /**
+   * Where the caller had got to, e.g. "page 2, 1000 buckets so far". It is
+   * carried into the deadline message, so a timeout says how much work had been
+   * done rather than only that time ran out.
+   */
+  detail?: string;
 }
 
 export interface AccessLayerOptions {
@@ -124,9 +130,12 @@ interface DispatchArgs {
   context: CallContext;
 }
 
+/** A call slower than this is worth mentioning without turning on debug logs. */
+const SLOW_CALL_MS = 10_000;
+
 export class AwsAccessLayer {
   readonly tracker: ApiCallTracker;
-  private readonly requestTimeoutMs: number;
+  private requestTimeoutMs: number;
   private readonly maxRetries: number;
   private readonly timeoutRetries: number;
   private disabledCategories: Set<ApiCategory>;
@@ -165,6 +174,11 @@ export class AwsAccessLayer {
    */
   setDisabledCategories(categories: readonly ApiCategory[]): void {
     this.disabledCategories = new Set(categories);
+  }
+
+  /** Applies a new per-request deadline, e.g. after the user changes Settings. */
+  setRequestTimeout(milliseconds: number): void {
+    if (Number.isFinite(milliseconds) && milliseconds > 0) this.requestTimeoutMs = milliseconds;
   }
 
   isCategoryEnabled(category: ApiCategory): boolean {
@@ -244,6 +258,7 @@ export class AwsAccessLayer {
         },
       });
 
+      const durationMs = Date.now() - startedAt;
       this.tracker.record({
         category: entry.category,
         service: args.service,
@@ -253,8 +268,21 @@ export class AwsAccessLayer {
         region: args.region,
         section: args.context.section,
         status: 'success',
-        durationMs: Date.now() - startedAt,
+        durationMs,
       });
+
+      const call = {
+        service: args.service,
+        operation,
+        region: args.region,
+        profile: args.profile,
+        durationMs,
+        ...(args.context.detail ? { detail: args.context.detail } : {}),
+      };
+      // A call that is merely slow is invisible until it becomes a timeout, so
+      // it is reported once it passes the threshold without needing debug logs.
+      if (durationMs >= SLOW_CALL_MS) logger.warn('Slow AWS call', call);
+      else logger.debug('AWS call', call);
 
       return output as TOutput;
     } catch (error) {
@@ -276,8 +304,11 @@ export class AwsAccessLayer {
         service: args.service,
         operation,
         region: args.region,
+        profile: args.profile,
+        durationMs: Date.now() - startedAt,
         kind: classified.kind,
         code: classified.code,
+        ...(args.context.detail ? { detail: args.context.detail } : {}),
       });
       throw error;
     }
@@ -300,7 +331,8 @@ export class AwsAccessLayer {
     // IAM action when the message is read back.
     const message =
       `AWS request timed out after ${this.requestTimeoutMs}ms ` +
-      `(${operation} on ${args.service} in ${args.region})`;
+      `(${operation} on ${args.service} in ${args.region}` +
+      `${args.context.detail ? `; ${args.context.detail}` : ''})`;
 
     try {
       return (await withTimeout(

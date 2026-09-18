@@ -5,6 +5,44 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.0] - 2026-09-18
+
+### Fixed
+
+- **The S3 security check failed with "ListBuckets on s3 in global" after 30
+  seconds.** The listing asked for the whole inventory in one request, and without
+  a page size S3 assembles every bucket in the account into a single response —
+  which on a large account takes longer than any sensible deadline, so the check
+  died before examining a single bucket. `ListBuckets` is now paged: 1,000 buckets
+  per request, following the continuation token, and stopping as soon as the scan
+  limit is reached (the default limit of 250 costs exactly one small page).
+- **A failed page no longer discards the buckets already listed.** If a later page
+  fails, the buckets that were listed are evaluated and the rest reported as
+  partially evaluated, instead of the whole check failing with nothing to show.
+
+### Changed
+
+- **One less AWS call per bucket.** The listing reports each bucket's region, so
+  `GetBucketLocation` is only called when that field is absent — 250 calls saved at
+  the default limit, and one fewer way for region resolution to fail.
+- `security.maxBucketsPerScan: 0` now means no limit, matching the Lambda setting,
+  and the partial-coverage notice offers *Inspect every bucket*.
+- Bucket counts are no longer stated as a total the scan never counted: a paged
+  listing can only honestly say how many were inspected and that more exist.
+
+### Added
+
+- **Configurable AWS request deadline** (Settings → Scan limits and AWS requests),
+  default 30s, 5–120s, applied without a restart. A slow or proxied network no
+  longer needs a new release.
+- **Deadline messages say how far the work got**, e.g. `ListBuckets on s3 in global;
+  page 2, 1000 buckets so far`. "Page 1, 0 buckets" is a network problem; "page 7"
+  is a size problem, and the message now tells them apart.
+- **`--log-level debug` logs every AWS call** with service, operation, region,
+  profile and duration, and any call slower than 10 seconds is logged as a warning
+  at the default level — before it becomes a timeout.
+- **AWS API Usage → Slowest calls**, the ten longest requests of the session.
+
 ## [1.2.0] - 2026-09-18
 
 ### Fixed
@@ -210,6 +248,7 @@ First public release.
 - 255 automated tests covering AWS safety, credentials, billing, security,
   CloudWatch, CloudTrail, AI behaviour and local configuration.
 
+[1.3.0]: https://github.com/Ashutosh-kumar07/aws-readonly-dashboard/releases/tag/v1.3.0
 [1.2.0]: https://github.com/Ashutosh-kumar07/aws-readonly-dashboard/releases/tag/v1.2.0
 [1.1.0]: https://github.com/Ashutosh-kumar07/aws-readonly-dashboard/releases/tag/v1.1.0
 [1.0.0]: https://github.com/Ashutosh-kumar07/aws-readonly-dashboard/releases/tag/v1.0.0

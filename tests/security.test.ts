@@ -806,6 +806,109 @@ describe('S3 bucket exposure', () => {
     GetBucketEncryption: { ServerSideEncryptionConfiguration: {} },
   };
 
+  /** A paginated ListBuckets, as S3 answers when MaxBuckets is set. */
+  function pagedBuckets(names: string[], pageSize: number, region?: string) {
+    return (input: { MaxBuckets?: number; ContinuationToken?: string }) => {
+      const start = input.ContinuationToken ? Number(input.ContinuationToken) : 0;
+      const size = Math.min(input.MaxBuckets ?? pageSize, pageSize);
+      const slice = names.slice(start, start + size);
+      const next = start + slice.length;
+      return {
+        Buckets: slice.map((Name) => ({ Name, ...(region ? { BucketRegion: region } : {}) })),
+        ...(next < names.length ? { ContinuationToken: String(next) } : {}),
+      };
+    };
+  }
+
+  it('asks for buckets a page at a time instead of the whole inventory at once', async () => {
+    // Without MaxBuckets, S3 assembles every bucket into one response, which on
+    // a large account takes longer than the request deadline allows.
+    const names = Array.from({ length: 2500 }, (_, index) => `bucket-${index}`);
+    const { layer, byRegion } = s3Layer({
+      ...openBucketResponses,
+      ListBuckets: pagedBuckets(names, 1000, 'us-east-1'),
+      GetBucketPolicyStatus: { PolicyStatus: { IsPublic: false } },
+      GetPublicAccessBlock: {
+        PublicAccessBlockConfiguration: {
+          BlockPublicAcls: true,
+          IgnorePublicAcls: true,
+          BlockPublicPolicy: true,
+          RestrictPublicBuckets: true,
+        },
+      },
+    });
+    const config = defaultConfig();
+    config.security.maxBucketsPerScan = 1200;
+
+    const result = await s3PublicAccessCheck.run(
+      context(layer, { region: GLOBAL_SCOPE, section: 'security:s3', config })
+    );
+
+    const listCalls = byRegion
+      .get('us-east-1')!
+      .calls.filter((call) => call.command === 'ListBucketsCommand');
+    // Two pages: 1000, then the 200 still allowed by the limit.
+    expect(listCalls).toHaveLength(2);
+    expect((listCalls[0]?.input as { MaxBuckets?: number }).MaxBuckets).toBe(1000);
+    expect((listCalls[1]?.input as { ContinuationToken?: string }).ContinuationToken).toBe('1000');
+    expect((listCalls[1]?.input as { MaxBuckets?: number }).MaxBuckets).toBe(200);
+    expect(result.resourcesEvaluated).toBe(1200);
+    expect(result.issues.some((issue) => issue.label.includes('more exist'))).toBe(true);
+  });
+
+  it('uses the region S3 reported with the listing instead of asking per bucket', async () => {
+    const { layer, byRegion } = s3Layer({
+      ...openBucketResponses,
+      ListBuckets: pagedBuckets(['a', 'b', 'c'], 1000, 'eu-west-1'),
+      GetBucketLocation: () => {
+        throw new Error('GetBucketLocation should not be called when the listing gave a region');
+      },
+      GetBucketPolicyStatus: { PolicyStatus: { IsPublic: false } },
+    });
+
+    const result = await s3PublicAccessCheck.run(
+      context(layer, { region: GLOBAL_SCOPE, section: 'security:s3' })
+    );
+
+    const globalCalls = byRegion.get('us-east-1')!.calls.map((call) => call.command);
+    expect(globalCalls).not.toContain('GetBucketLocationCommand');
+    // One call per bucket saved, and the region is still right.
+    expect(byRegion.has('eu-west-1')).toBe(true);
+    expect(result.resourcesEvaluated).toBe(3);
+  });
+
+  it('evaluates the buckets it did list when a later page fails', async () => {
+    const names = Array.from({ length: 2000 }, (_, index) => `bucket-${index}`);
+    const paged = pagedBuckets(names, 1000, 'us-east-1');
+    let listCalls = 0;
+    const timedOut = new Error('AWS request timed out after 30000ms (ListBuckets on s3 in global)');
+    timedOut.name = 'TimeoutError';
+
+    const { layer } = s3Layer({
+      ...openBucketResponses,
+      ListBuckets: (input: { MaxBuckets?: number; ContinuationToken?: string }) => {
+        listCalls += 1;
+        if (listCalls > 1) throw timedOut;
+        return paged(input);
+      },
+      GetBucketPolicyStatus: { PolicyStatus: { IsPublic: false } },
+    });
+    const config = defaultConfig();
+    config.security.maxBucketsPerScan = 0;
+
+    const result = await s3PublicAccessCheck.run(
+      context(layer, { region: GLOBAL_SCOPE, section: 'security:s3', config })
+    );
+
+    // A thousand buckets that were listed are worth more than nothing at all.
+    expect(result.evaluated).toBe(true);
+    expect(result.resourcesEvaluated).toBe(1000);
+    expect(result.truncated).toBe(true);
+    const failure = result.issues.find((issue) => issue.kind === 'timeout');
+    expect(failure?.label).toContain('listing buckets, page 2');
+    expect(failure?.label).toContain('1000 listed before it failed');
+  });
+
   it('resolves the legacy "EU" location to eu-west-1 instead of building a dead endpoint', async () => {
     const { layer, byRegion } = s3Layer(openBucketResponses);
 
