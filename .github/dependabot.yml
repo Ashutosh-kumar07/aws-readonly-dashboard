@@ -20,10 +20,19 @@ updates:
         patterns:
           - '@aws-sdk/*'
           - '@smithy/*'
+        update-types:
+          - minor
+          - patch
       dev-tooling:
         dependency-type: development
         patterns:
           - '*'
+        # Majors are deliberately excluded from the group: a batched major bump
+        # of TypeScript, ESLint and Vitest lands as one un-reviewable red pull
+        # request. Each major arrives on its own instead.
+        update-types:
+          - minor
+          - patch
 
   - package-ecosystem: github-actions
     directory: /
