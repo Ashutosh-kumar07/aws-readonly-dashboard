@@ -62,20 +62,41 @@ jobs:
       - name: Inspect the package contents
         run: npm pack --dry-run
 
+      # A run can legitimately reach this point with nothing to do: pushing the
+      # tag for a version that was already published, or re-running a release.
+      # Publishing again would fail with EPUBLISHCONFLICT, so it is skipped and
+      # the run stays green.
+      - name: Check whether this version is already published
+        id: state
+        run: |
+          name="$(node -p "require('./package.json').name")"
+          version="$(node -p "require('./package.json').version")"
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if npm view "$name@$version" version > /dev/null 2>&1; then
+            echo "published=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::$name@$version is already on the registry; skipping the publish step."
+            echo "$name@$version is already published — nothing to do." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "published=false" >> "$GITHUB_OUTPUT"
+            echo "Publishing $name@$version." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
       # npm provenance attestations require a public source repository, so the
       # flag is only passed when the repository actually is public.
       # Authentication comes from the OIDC token granted by `id-token: write`
       # above, matched against the trusted publisher configured on npmjs.com for
       # this repository and workflow file. No npm token is involved.
       - name: Publish with provenance
-        if: ${{ !github.event.repository.private }}
+        if: ${{ steps.state.outputs.published == 'false' && !github.event.repository.private }}
         run: npm publish --provenance --access public --tag "${{ inputs.dist_tag || 'latest' }}"
 
       - name: Publish (private repository, provenance unavailable)
-        if: ${{ github.event.repository.private }}
+        if: ${{ steps.state.outputs.published == 'false' && github.event.repository.private }}
         run: npm publish --access public --tag "${{ inputs.dist_tag || 'latest' }}"
 
       - name: Verify the published version
+        if: ${{ steps.state.outputs.published == 'false' }}
         run: |
           sleep 15
-          npm view aws-readonly-dashboard version
+          npm view "${{ steps.state.outputs.name }}" version

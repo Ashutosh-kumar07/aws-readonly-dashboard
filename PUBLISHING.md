@@ -248,6 +248,17 @@ If trusted publishing is unavailable, create a **granular access token** scoped 
 this package only, with a short expiry, and store it as the `NPM_TOKEN` repository
 secret. Rotate it regularly and revoke it as soon as trusted publishing is in place.
 
+## Re-running a release
+
+The release job checks the registry before publishing. If the version in
+`package.json` is already on npm — because you pushed the tag for a version that
+CI already published, or you re-ran a release — the publish step is skipped and
+the run finishes green with a note saying so. Publishing the same version twice
+is impossible on npm, so a run that has nothing to do should not look like a
+failure.
+
+To publish again you must raise the version; see below.
+
 ## Releasing a follow-up version
 
 1. Merge changes to the default branch; confirm CI is green.
