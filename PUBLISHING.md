@@ -178,8 +178,9 @@ The repository ships two workflows:
 
 - `.github/workflows/ci.yml` — runs on every push and pull request: install, lint,
   type check, test, build, pack, and verify the tarball contents. It never publishes.
-- `.github/workflows/release.yml` — runs only when a `v*` tag is pushed (or when
-  dispatched manually). It re-runs the full verification, then publishes.
+- `.github/workflows/release.yml` — runs when a `v*` tag is pushed, or when
+  dispatched manually. It re-runs the full verification, publishes, and — for a
+  manual dispatch — tags the published commit and creates the GitHub release.
 
 ### Requirements
 
@@ -225,11 +226,12 @@ to configure trusted publishing against. Publish `1.0.0` once from your machine
 
 1. On npmjs.com, open the package → **Settings → Trusted publishing**.
 2. Add this GitHub repository and the `release.yml` workflow as a trusted publisher.
-3. Ensure the job requests the OIDC token:
+3. Ensure the job requests the OIDC token (and `contents: write`, so the same run
+   can create its tag and release):
 
    ```yaml
    permissions:
-     contents: read
+     contents: write
      id-token: write
    ```
 
@@ -241,6 +243,29 @@ to configure trusted publishing against. Publish `1.0.0` once from your machine
 
 No secret is stored anywhere, and each published version carries a verifiable
 provenance attestation.
+
+### Tagging and release notes
+
+A manually dispatched release does the tagging itself, so the version, the tag, the
+GitHub release and the changelog cannot drift apart:
+
+1. Publish from the commit that was verified in the same run.
+2. Create `v<version>` from that exact commit and push it.
+3. Extract the `## [<version>]` section of `CHANGELOG.md` and publish it as the
+   GitHub release notes (`gh release create --verify-tag`).
+
+Consequences worth knowing:
+
+- **The CHANGELOG section is the release notes.** If the heading for the version
+  being published is missing, the release falls back to a bare "Release vX.Y.Z".
+  Write the entry before dispatching.
+- The step is skipped for tag-triggered runs — the tag already exists — and skipped
+  when the registry already has that version, so re-running a release never tries to
+  re-tag or double-release.
+- If the tag exists but the release does not, the step leaves the tag alone and logs
+  a notice; create the release manually in that case.
+
+This is why `contents: write` is on the job. It is the only write the workflow does.
 
 ### Token fallback
 
@@ -261,11 +286,20 @@ To publish again you must raise the version; see below.
 
 ## Releasing a follow-up version
 
+The recommended path is a manual dispatch, which tags and writes the release notes
+for you:
+
 1. Merge changes to the default branch; confirm CI is green.
-2. Add a `CHANGELOG.md` entry under a new version heading.
-3. `npm version <patch|minor|major>`.
-4. `git push --follow-tags` — the release workflow publishes the tag.
+2. Bump the version (`npm version <patch|minor|major> --no-git-tag-version`) and add
+   the matching `## [<version>]` entry to `CHANGELOG.md` in the same commit.
+3. Push that commit to the default branch.
+4. Run the **Release** workflow from the Actions tab (`workflow_dispatch`) against
+   that commit. It verifies, publishes, creates `v<version>` and the GitHub release.
 5. Verify with `npm view aws-readonly-dashboard version`.
+
+If you prefer to tag by hand, `npm version <patch|minor|major>` followed by
+`git push --follow-tags` still works: the tag triggers the same workflow, which
+publishes but leaves tagging and the release to you.
 
 ## Deprecating a version
 

@@ -34,6 +34,7 @@ outside a compile-time read-only allowlist.
 - [Features](#features)
 - [Installation](#installation)
 - [Usage](#usage)
+- [Progressive loading](#progressive-loading)
 - [AWS permissions](#aws-permissions)
 - [The read-only guarantee](#the-read-only-guarantee)
 - [AWS API usage accounting](#aws-api-usage-accounting)
@@ -115,10 +116,18 @@ Dashboard: http://127.0.0.1:9002
   identity, resource, source IP, read/write type, outcome and free text, with UI
   pagination over large result sets.
 
+**Dashboard**
+
+- **Progressive loading** — sections that take a while (security especially) render
+  their first results as soon as they exist and keep filling in, with a progress bar
+  and an explicit "these results are incomplete" banner, instead of showing a blank
+  spinner until everything has finished.
+
 **AI (optional)**
 
 - **Gemini CLI** as the default provider, reusing your existing Gemini
-  authentication; **Non-LLM mode** when it is not available.
+  authentication. The header reports one of three honest states — *Available*,
+  *Not authenticated*, or **Non-LLM mode** — and never guesses which one applies.
 - **Custom LLM REST endpoint** for teams with an internal gateway — you define the
   URL, method, headers, body template and response path.
 - **Never automatic** — AI runs only when you press an Analyze button.
@@ -184,9 +193,51 @@ aws-readonly-dashboard --no-open --log-level debug
 3. Pick your **regions**. Global resources are always included separately.
 4. Open a section. Opening it fetches that section's AWS data; returning to it
    reuses what is already in memory. Each section has its own **Refresh**, and the
-   header has **Refresh All**.
+   header has **Refresh All**. Sections that take more than a moment stream partial
+   results as they arrive — see [Progressive loading](#progressive-loading).
 5. Optionally press an **Analyze** button to send that section — sanitized — to your
    configured AI provider.
+
+---
+
+## Progressive loading
+
+A full security scan across several profiles and a dozen regions is hundreds of AWS
+calls. Waiting for all of them before drawing anything means staring at a spinner
+long past the ten seconds that is generally accepted as the limit of a user's
+attention, with no way to tell a slow scan from a stuck one.
+
+Billing, security, CloudWatch and Compute Optimizer therefore load as *jobs*. The
+browser starts the job, then polls it, and every poll returns whatever the scan has
+produced so far:
+
+```
+POST   /api/sections/security  { "stream": true }
+         -> { id, section, status: "running", progress, partial }
+GET    /api/jobs/<id>
+         -> { status, progress: { completed, total, label }, partial }
+DELETE /api/jobs/<id>
+         -> { cancelled: true }
+```
+
+What you see while a section is still working:
+
+- the findings, rows and charts that already exist, rendered normally;
+- a progress bar with a real count (`12 / 22`) and the name of the check or profile
+  currently running;
+- a **"Still scanning — these results are incomplete"** banner, so a partial view is
+  never mistaken for a finished one.
+
+The progress count is a true position, not an estimate: each check reports its own
+completion and per-profile units are aggregated rather than summed into a
+meaningless ratio. Identical requests are de-duplicated, so asking for the same
+section again while a scan is in flight attaches to the running job instead of
+starting a second one. `DELETE /api/jobs/<id>` stops a job at the next unit
+boundary; no AWS calls are made after that point.
+
+This is presentation only. It changes nothing about which AWS calls are made, the
+read-only guarantee, or the API-call accounting — a partial render costs exactly the
+calls it reports in **AWS API Usage**.
 
 ---
 
@@ -409,16 +460,36 @@ At startup the dashboard checks whether the [Gemini CLI](https://github.com/goog
 is available by running `gemini --version`. That is a capability probe, not an AI
 call — no prompt and no data leave your machine.
 
-- If it is available, the header shows **Gemini CLI: Available**.
-- If it is not, the header shows **Non-LLM mode**. The dashboard does not install
-  Gemini, does not call it, and does not silently switch to another provider. You
-  can still use every AWS feature, and you can still preview exactly what *would*
-  be sent.
+The header reports one of three states, and they mean different things:
+
+| State | Meaning | What to do |
+| --- | --- | --- |
+| **Gemini CLI: Available** | The CLI was found and ran. | Nothing. |
+| **Gemini CLI: Not authenticated** | The CLI is installed and runs, but has no usable credentials. | Run `gemini` once and sign in, or set `GEMINI_API_KEY`. |
+| **Non-LLM mode** | No CLI was found on `PATH` (or the configured command could not be executed). | Install it, point Settings at the right command, or use a custom endpoint. |
+
+"Installed but not signed in" is deliberately *not* collapsed into "not installed" —
+the fix is different, so the message is different. The probe reports why it failed,
+including the specific `ENOENT` / `EACCES` cases, rather than a generic failure.
+
+The dashboard does not install Gemini, does not call it on your behalf, and does not
+silently switch to another provider. In Non-LLM mode every AWS feature still works,
+and you can still preview exactly what *would* be sent.
+
+**Windows.** The CLI installs as `gemini.cmd`, and Node cannot execute a `.cmd` or
+`.bat` file directly. The dashboard resolves the command against `PATH` and
+`PATHEXT` and only then decides whether a shell is required, so `gemini` works on
+Windows exactly as it does on macOS and Linux. Because a shell is involved in that
+case, a configured command containing shell metacharacters is refused rather than
+executed — configure the plain path to the executable and use Settings for
+arguments.
 
 Authentication is entirely the CLI's: the dashboard invokes it as a child process
 and inherits your existing session. **No Gemini credentials or API keys are stored
 by this application.** The prompt is written to the CLI's standard input, never onto
-a command line where it could appear in your shell history or process list.
+a command line — that keeps it out of your shell history and process list, and it
+also means a large payload cannot hit the Windows 8191-character command-line
+limit.
 
 ### Custom LLM REST endpoint
 
@@ -597,9 +668,20 @@ of CloudWatch data) before it will make a recommendation. The dashboard shows th
 enrollment status rather than inventing recommendations.
 
 **“Non-LLM mode”**
-The Gemini CLI was not found on `PATH`. Install and authenticate it, adjust the
-command in Settings, or configure a custom LLM endpoint. Everything except AI
-analysis works normally.
+The Gemini CLI was not found on `PATH`. Install it (`npm install -g @google/gemini-cli`),
+adjust the command in **Settings → AI**, or configure a custom LLM endpoint.
+Everything except AI analysis works normally.
+
+On Windows the CLI is `gemini.cmd`; the dashboard resolves that through `PATH` and
+`PATHEXT` itself, so you do not need to configure the `.cmd` suffix. If you point
+Settings at an absolute path, point it at the real executable — a command containing
+shell metacharacters is refused rather than run through a shell.
+
+**“Gemini CLI: Not authenticated”**
+The CLI is installed and runs, but has no credentials. Run `gemini` once in a
+terminal and complete the sign-in, or set `GEMINI_API_KEY` in the environment the
+dashboard is started from. This is reported separately from Non-LLM mode on purpose:
+installing the CLI again will not fix it.
 
 **Custom LLM requests fail**
 Check the endpoint URL, headers and response path in Settings. A configured response
@@ -654,6 +736,7 @@ The architecture is deliberately layered:
 CLI (src/cli.ts)
   └─ Local server (src/server/)
        └─ Dashboard API (src/server/routes.ts)
+            └─ Partial-result job runner (src/server/job-runner.ts)
             └─ Application services (src/server/dashboard-service.ts, src/services/)
                  └─ AWS read-only access layer (src/aws/)
                       ├─ read-only enforcement (readonly-guard.ts)
@@ -665,6 +748,7 @@ CLI (src/cli.ts)
 Application services
   └─ AI orchestrator (src/ai/orchestrator.ts)
        ├─ Gemini CLI provider (src/ai/providers/gemini-cli.ts)
+       │    └─ cross-platform command resolver (providers/command-resolver.ts)
        └─ Custom REST provider (src/ai/providers/custom-rest.ts)
 
 Security analyzer (src/services/security/)

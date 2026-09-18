@@ -5,6 +5,56 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0] - 2026-09-18
+
+### Added
+
+- **Progressive loading for slow sections.** Billing, security, CloudWatch and
+  Compute Optimizer now run as cancellable jobs that report partial results. The
+  first findings appear as soon as they exist instead of after the whole scan, with
+  a progress bar showing a real position (`12 / 22`) and the check or profile
+  currently running.
+- **"Still scanning — these results are incomplete" banner**, so a partial view can
+  never be mistaken for a finished one.
+- Job API: `stream: true` on the section routes, `GET /api/jobs/:id` to poll, and
+  `DELETE /api/jobs/:id` to cancel. Identical in-flight requests are de-duplicated
+  rather than starting a second scan.
+- **"Gemini CLI: Not authenticated"** as a distinct startup state, separate from
+  Non-LLM mode: an installed-but-unauthenticated CLI is a different problem with a
+  different fix, and is now reported as such.
+- `src/ai/providers/command-resolver.ts`: cross-platform executable resolution with
+  `PATH`/`PATHEXT` lookup, an explicit refusal for commands containing shell
+  metacharacters, and `ENOENT`/`EACCES`-specific guidance.
+- Dependabot configuration for GitHub Actions and npm dependencies.
+- 41 new tests (296 total), covering the job runner and Gemini CLI detection,
+  including Windows `.cmd` resolution and an oversized-prompt argument-length check.
+
+### Fixed
+
+- **Gemini CLI was reported as unavailable on Windows.** The CLI installs as
+  `gemini.cmd`, which Node cannot execute directly, so the capability probe failed
+  with `ENOENT` even when the CLI was installed and working. The command is now
+  resolved against `PATH`/`PATHEXT` and a shell is used only when the resolved
+  target genuinely requires one.
+- The Gemini provider now runs headlessly and deterministically: the instruction is
+  passed with `-p` while the payload stays on standard input, which keeps a large
+  payload clear of the Windows 8191-character command-line limit.
+- A spawn failure is now distinguishable from a command that ran and failed, so
+  "not installed" is no longer conflated with "returned an error".
+- Section progress could display a nonsensical ratio (`23 / 1`) when per-check and
+  per-profile units were summed. Progress is now an absolute position aggregated per
+  profile.
+
+### Changed
+
+- The release workflow tags the published commit and creates the GitHub release,
+  extracting the notes from this file, so a release is one dispatch rather than a
+  manual tag plus a manual release.
+- Release workflow requests npm provenance only where it is available, and skips a
+  version that is already on the registry instead of failing the run.
+- Documentation: a Progressive loading section, the three Gemini states, Windows
+  Gemini troubleshooting, and two new project invariants in CONTRIBUTING.
+
 ## [1.0.0] - 2026-09-17
 
 First public release.
@@ -87,4 +137,5 @@ First public release.
 - 255 automated tests covering AWS safety, credentials, billing, security,
   CloudWatch, CloudTrail, AI behaviour and local configuration.
 
+[1.1.0]: https://github.com/Ashutosh-kumar07/aws-readonly-dashboard/releases/tag/v1.1.0
 [1.0.0]: https://github.com/Ashutosh-kumar07/aws-readonly-dashboard/releases/tag/v1.0.0

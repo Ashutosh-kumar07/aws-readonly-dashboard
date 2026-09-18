@@ -41,6 +41,30 @@ will not be merged, however convenient it is.
    written to disk.
 7. **No invented data.** If AWS does not provide a figure (a savings estimate, a
    performance risk), show that it was not provided rather than estimating one.
+8. **Partial results are labelled as partial.** A view that is still loading must
+   say so — progress and the "still scanning" banner exist so an incomplete scan is
+   never mistaken for a finished one. Progress counts must be real positions
+   reported by the work itself, never interpolated or estimated.
+9. **External commands are resolved, never guessed.** Anything spawned as a child
+   process goes through `src/ai/providers/command-resolver.ts`, which resolves the
+   executable against `PATH`/`PATHEXT`, decides whether a shell is genuinely
+   required (Windows `.cmd`/`.bat`), and refuses commands containing shell
+   metacharacters. Do not call `spawn` with `shell: true` anywhere else.
+
+## Long-running sections
+
+Sections that can take more than a few seconds stream their results:
+
+1. The service accepts an `onProgress` / `onPartial` callback and calls it as each
+   unit of work completes, passing an **absolute** position (`completed`, `total`)
+   and a label — never a delta.
+2. `src/server/routes.ts` wraps the fetch in `jobs.start(...)` from
+   `src/server/job-runner.ts` when the request asks for `stream: true`.
+3. The browser polls `GET /api/jobs/<id>` and renders each snapshot.
+
+Units from different levels (per-check and per-profile) must be aggregated, not
+summed — see the `unitProgress` map in `src/server/dashboard-service.ts` for why.
+Add a job-runner test for any new streaming path.
 
 ## Adding a security check
 
@@ -87,6 +111,8 @@ tests stay hermetic. Tests must never make a real AWS, network or AI call.
 
 - Keep commits focused; use a short imperative subject line
   (`fix: report Config recorder failures as unevaluated`).
+- User-visible changes need a CHANGELOG entry under `## [Unreleased]`; the release
+  workflow publishes that section verbatim as the GitHub release notes.
 - Run `npm run verify` before pushing.
 - In the PR description, say what changed, why, and how you tested it. If the change
   touches AWS access, sanitization or AI invocation, say explicitly which invariant
