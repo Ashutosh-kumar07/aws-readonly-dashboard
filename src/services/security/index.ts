@@ -46,6 +46,17 @@ export interface SecurityData {
   };
 }
 
+/** Progress emitted as each check finishes, so results can be shown early. */
+export interface SecurityProgress {
+  completed: number;
+  total: number;
+  /** The check and region that just finished. */
+  label: string;
+  /** Everything found so far, ready to render. */
+  data: SecurityData;
+  issues: EvaluationIssue[];
+}
+
 export interface RunSecurityOptions {
   access: AwsAccessLayer;
   config: AppConfig;
@@ -56,6 +67,12 @@ export interface RunSecurityOptions {
   section?: string;
   /** Concurrency across (check × region) units. */
   concurrency?: number;
+  /**
+   * Called after each check completes. A scan of many checks across many
+   * regions takes far longer than a user will watch a spinner, so partial
+   * results are published as they arrive.
+   */
+  onProgress?: (progress: SecurityProgress) => void;
 }
 
 function toPersisted(finding: SecurityFinding): PersistedFinding {
@@ -104,6 +121,39 @@ function fromPersisted(persisted: PersistedFinding): SecurityFinding {
   };
 }
 
+/** Sorts findings and computes the summary counts shown in the dashboard. */
+function buildSecurityData(
+  findings: SecurityFinding[],
+  resolvedFindings: SecurityFinding[],
+  checks: CheckStatus[]
+): SecurityData {
+  const sorted = [...findings].sort((a, b) => {
+    const rank = SEVERITY_RANK[b.severity] - SEVERITY_RANK[a.severity];
+    return rank !== 0 ? rank : a.title.localeCompare(b.title);
+  });
+
+  const bySeverity: Record<Severity, number> = { critical: 0, high: 0, medium: 0, low: 0 };
+  const byStatus: Record<string, number> = { open: 0, acknowledged: 0, ignored: 0, resolved: 0 };
+  for (const finding of sorted) {
+    bySeverity[finding.severity] += 1;
+    byStatus[finding.status] = (byStatus[finding.status] ?? 0) + 1;
+  }
+  byStatus.resolved = (byStatus.resolved ?? 0) + resolvedFindings.length;
+
+  return {
+    findings: sorted,
+    resolvedFindings,
+    checks,
+    summary: {
+      total: sorted.length,
+      bySeverity,
+      byStatus,
+      evaluatedChecks: checks.filter((check) => check.state === 'evaluated').length,
+      notEvaluatedChecks: checks.filter((check) => check.state === 'not-evaluated').length,
+    },
+  };
+}
+
 /** Runs the security analyzer for a single profile across the selected regions. */
 export async function runSecurityAnalysis(
   options: RunSecurityOptions
@@ -121,7 +171,12 @@ export async function runSecurityAnalysis(
     }
   }
 
-  const results = await mapWithConcurrency(units, options.concurrency ?? 6, async (unit) => {
+  const findings: SecurityFinding[] = [];
+  const checks: CheckStatus[] = [];
+  const issues: EvaluationIssue[] = [];
+  let completed = 0;
+
+  await mapWithConcurrency(units, options.concurrency ?? 6, async (unit) => {
     const context: CheckContext = {
       access: options.access,
       profile: options.profile,
@@ -131,14 +186,7 @@ export async function runSecurityAnalysis(
       section: `${section}:${unit.check.id}`,
     };
     const result = await unit.check.run(context);
-    return { unit, result };
-  });
 
-  const findings: SecurityFinding[] = [];
-  const checks: CheckStatus[] = [];
-  const issues: EvaluationIssue[] = [];
-
-  for (const { unit, result } of results) {
     findings.push(...result.findings);
     issues.push(...result.issues);
     checks.push({
@@ -155,7 +203,21 @@ export async function runSecurityAnalysis(
       ...(result.truncated ? { truncated: true } : {}),
       issues: result.issues,
     });
-  }
+
+    completed += 1;
+    if (options.onProgress) {
+      // Snapshot what is known so far. The persisted statuses and the resolved
+      // set are only merged at the end, so a partial view is explicitly marked
+      // as still running by the caller rather than implying completeness.
+      options.onProgress({
+        completed,
+        total: units.length,
+        label: `${unit.check.title} (${unit.region})`,
+        data: buildSecurityData([...findings], [], [...checks]),
+        issues: [...issues],
+      });
+    }
+  });
 
   for (const check of SECURITY_CHECKS) {
     if (!disabled.has(check.id)) continue;
@@ -192,31 +254,7 @@ export async function runSecurityAnalysis(
     .filter((finding) => finding.profile === options.profile)
     .map(fromPersisted);
 
-  findings.sort((a, b) => {
-    const rank = SEVERITY_RANK[b.severity] - SEVERITY_RANK[a.severity];
-    return rank !== 0 ? rank : a.title.localeCompare(b.title);
-  });
-
-  const bySeverity: Record<Severity, number> = { critical: 0, high: 0, medium: 0, low: 0 };
-  const byStatus: Record<string, number> = { open: 0, acknowledged: 0, ignored: 0, resolved: 0 };
-  for (const finding of findings) {
-    bySeverity[finding.severity] += 1;
-    byStatus[finding.status] = (byStatus[finding.status] ?? 0) + 1;
-  }
-  byStatus.resolved = (byStatus.resolved ?? 0) + resolvedFindings.length;
-
-  const data: SecurityData = {
-    findings,
-    resolvedFindings,
-    checks,
-    summary: {
-      total: findings.length,
-      bySeverity,
-      byStatus,
-      evaluatedChecks: checks.filter((check) => check.state === 'evaluated').length,
-      notEvaluatedChecks: checks.filter((check) => check.state === 'not-evaluated').length,
-    },
-  };
+  const data = buildSecurityData(findings, resolvedFindings, checks);
 
   return {
     profile: options.profile,

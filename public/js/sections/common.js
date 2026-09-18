@@ -1,6 +1,14 @@
 /** Shared scaffolding for data-backed sections. */
 
-import { el, errorState, loadingState, emptyState, relativeTime, sectionHeader } from '../ui.js';
+import {
+  el,
+  errorState,
+  loadingState,
+  emptyState,
+  relativeTime,
+  sectionHeader,
+  progressBar,
+} from '../ui.js';
 
 /**
  * Renders the header + load/loading/error scaffolding for a section, delegating
@@ -27,13 +35,15 @@ export function sectionShell({
           ? `Fetched ${relativeTime(entry.fetchedAt)} · profiles: ${state.selectedProfiles.join(', ') || 'none'} · regions: ${
               state.selectedRegions.join(', ') || 'global only'
             }`
-          : undefined,
+          : entry.status === 'partial' && entry.progress
+            ? `Scanning ${entry.progress.completed} of ${entry.progress.total}…`
+            : undefined,
       actions: [
         ...extraActions,
         el('button', {
           class: 'button',
-          text: 'Refresh',
-          disabled: entry.status === 'loading',
+          text: entry.status === 'loading' || entry.status === 'partial' ? 'Scanning…' : 'Refresh',
+          disabled: entry.status === 'loading' || entry.status === 'partial',
           onClick: () => void actions.loadSection(key, { force: true }),
         }),
       ],
@@ -58,7 +68,7 @@ export function sectionShell({
   }
 
   if (entry.status === 'loading') {
-    container.append(loadingState());
+    container.append(loadingState('Scanning AWS…', entry.progress));
     return container;
   }
 
@@ -75,8 +85,27 @@ export function sectionShell({
 
   const profiles = entry.data?.profiles ?? [];
   if (profiles.length === 0) {
-    container.append(emptyState('No data returned for the current selection'));
+    container.append(
+      entry.status === 'partial'
+        ? loadingState('Scanning AWS…', entry.progress)
+        : emptyState('No data returned for the current selection')
+    );
     return container;
+  }
+
+  // While a scan is still running, the results so far are shown above a live
+  // progress bar, and labelled as incomplete so a partial view is never
+  // mistaken for a finished one.
+  if (entry.status === 'partial') {
+    container.append(
+      el('div', { class: 'notice notice--info' }, [
+        el('strong', {}, [
+          el('span', { class: 'spinner', 'aria-hidden': 'true' }),
+          ' Still scanning — these results are incomplete',
+        ]),
+        progressBar(entry.progress),
+      ])
+    );
   }
 
   for (const profile of profiles) container.append(renderBody(profile, entry.data));

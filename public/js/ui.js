@@ -92,11 +92,35 @@ export function badge(text, variant = 'neutral') {
   return el('span', { class: `badge badge--${variant}`, text });
 }
 
-export function loadingState(message = 'Loading AWS data…') {
+/** A determinate progress bar; falls back to a count when the total is unknown. */
+export function progressBar(progress) {
+  if (!progress || !progress.total) return null;
+  const percent = Math.min(100, Math.round((progress.completed / progress.total) * 100));
+  return el('div', { class: 'progress' }, [
+    el(
+      'div',
+      {
+        class: 'progress__track',
+        role: 'progressbar',
+        'aria-valuenow': String(progress.completed),
+        'aria-valuemin': '0',
+        'aria-valuemax': String(progress.total),
+        'aria-label': 'Scan progress',
+      },
+      el('div', { class: 'progress__fill', style: `width:${percent}%` })
+    ),
+    el('div', { class: 'progress__label' }, [
+      `${progress.completed} of ${progress.total}`,
+      progress.label ? el('span', { class: 'subtle', text: ` · ${progress.label}` }) : null,
+    ]),
+  ]);
+}
+
+export function loadingState(message = 'Loading AWS data…', progress) {
   return el('div', { class: 'state' }, [
     el('span', { class: 'spinner', 'aria-hidden': 'true' }),
     el('p', { class: 'state__title', text: message }),
-    el('p', { text: 'Only read-only AWS APIs are called.' }),
+    progress ? progressBar(progress) : el('p', { text: 'Only read-only AWS APIs are called.' }),
   ]);
 }
 

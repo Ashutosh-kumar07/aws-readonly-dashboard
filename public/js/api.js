@@ -46,6 +46,8 @@ export const api = {
   securityChecks: () => request('/api/security/checks'),
 
   section: (section, body) => request(`/api/sections/${section}`, { method: 'POST', body }),
+  job: (id) => request(`/api/jobs/${encodeURIComponent(id)}`),
+  cancelJob: (id) => request(`/api/jobs/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   refreshAll: (body) => request('/api/sections/refresh-all', { method: 'POST', body }),
 
   cloudtrailSearch: (body) => request('/api/cloudtrail/search', { method: 'POST', body }),

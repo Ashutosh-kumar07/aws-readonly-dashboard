@@ -633,6 +633,55 @@ describe('the security analyzer', () => {
     });
   });
 
+  it('reports progress as each check finishes, so results can be shown early', async () => {
+    const client = new FakeClient({
+      DescribeSecurityGroups: {
+        SecurityGroups: [
+          {
+            GroupId: 'sg-1',
+            IpPermissions: [
+              { IpProtocol: 'tcp', FromPort: 22, ToPort: 22, IpRanges: [{ CidrIp: '0.0.0.0/0' }] },
+            ],
+          },
+        ],
+      },
+    });
+    const layer = new AwsAccessLayer({ clientFactory: () => client as never, maxRetries: 0 });
+
+    await withTempDir(async (dir) => {
+      const store = new FindingStore(join(dir, 'findings.json'));
+      await store.load();
+      const updates: Array<{ completed: number; total: number; findings: number; label: string }> =
+        [];
+
+      await runSecurityAnalysis({
+        access: layer,
+        config: defaultConfig(),
+        store,
+        profile: 'dev',
+        regions: ['us-east-1'],
+        onProgress: (progress) =>
+          updates.push({
+            completed: progress.completed,
+            total: progress.total,
+            findings: progress.data.findings.length,
+            label: progress.label,
+          }),
+      });
+
+      expect(updates.length).toBeGreaterThan(1);
+      // The counter advances monotonically and ends at the declared total.
+      expect(updates[0]?.completed).toBe(1);
+      expect(updates.at(-1)?.completed).toBe(updates.at(-1)?.total);
+      for (let index = 1; index < updates.length; index += 1) {
+        expect(updates[index]!.completed).toBe(updates[index - 1]!.completed + 1);
+      }
+      // A finding is visible before the scan finishes.
+      expect(updates.some((update) => update.findings > 0)).toBe(true);
+      expect(updates.at(-1)?.label).toBeTruthy();
+    });
+  });
+
   it('honours disabled checks from configuration', async () => {
     const client = new FakeClient({});
     const layer = new AwsAccessLayer({ clientFactory: () => client as never, maxRetries: 0 });

@@ -537,6 +537,35 @@ label {
   }
 }
 
+.progress {
+  margin-top: 0.5rem;
+}
+.progress__track {
+  background: var(--surface-3);
+  border-radius: 999px;
+  height: 8px;
+  overflow: hidden;
+  max-width: 460px;
+  margin: 0 auto;
+}
+.progress__fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 999px;
+  transition: width 0.3s ease;
+}
+@media (prefers-reduced-motion: reduce) {
+  .progress__fill {
+    transition: none;
+  }
+}
+.progress__label {
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  margin-top: 0.3rem;
+  font-variant-numeric: tabular-nums;
+}
+
 .notice {
   border-radius: var(--radius-sm);
   padding: 0.6rem 0.8rem;

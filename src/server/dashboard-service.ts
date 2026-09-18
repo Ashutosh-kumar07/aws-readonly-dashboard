@@ -43,6 +43,19 @@ export interface SectionFetchOptions {
   profiles: string[];
   regions: string[];
   force?: boolean;
+  /**
+   * Called as each profile (and, for security, each check) completes, so the
+   * dashboard can render results while the rest of the work continues.
+   */
+  onPartial?: (update: SectionPartial) => void;
+}
+
+/** An incremental section update: what is known so far, and how far along. */
+export interface SectionPartial {
+  profiles: Array<ProfileScoped<unknown>>;
+  completed: number;
+  total: number;
+  label?: string;
 }
 
 export interface SectionEnvelope<T> extends SectionResult<T> {
@@ -127,18 +140,74 @@ export class DashboardService {
 
   private async fanOut<T>(
     selection: Selection,
-    worker: (profile: string, accountId: string | undefined) => Promise<ProfileScoped<T>>
+    worker: (
+      profile: string,
+      accountId: string | undefined,
+      report: (
+        partial: ProfileScoped<T>,
+        completedUnits?: number,
+        total?: number,
+        label?: string
+      ) => void
+    ) => Promise<ProfileScoped<T>>,
+    onPartial?: (update: SectionPartial) => void
   ): Promise<Array<ProfileScoped<T>>> {
-    return mapWithConcurrency(selection.profiles, 3, async (profile) => {
+    // Results are published as they land, keyed by profile so a later update
+    // for the same profile replaces the earlier partial rather than duplicating it.
+    const inFlight = new Map<string, ProfileScoped<T>>();
+
+    // Progress is counted in units of work, which differ per section: the
+    // security analyzer reports one unit per check, everything else one unit
+    // per profile. Totals are tracked per profile and summed, so the two are
+    // never mixed into a meaningless ratio.
+    const unitProgress = new Map<string, { completed: number; total: number }>(
+      selection.profiles.map((profile) => [profile, { completed: 0, total: 1 }])
+    );
+
+    const publish = (label?: string): void => {
+      if (!onPartial) return;
+      let completed = 0;
+      let total = 0;
+      for (const entry of unitProgress.values()) {
+        completed += entry.completed;
+        total += entry.total;
+      }
+      onPartial({
+        profiles: [...inFlight.values()],
+        completed,
+        total,
+        ...(label ? { label } : {}),
+      });
+    };
+
+    const results = await mapWithConcurrency(selection.profiles, 3, async (profile) => {
       const accountId = await this.accountFor(profile);
+      const report = (
+        partial: ProfileScoped<T>,
+        completedUnits?: number,
+        totalUnits?: number,
+        label?: string
+      ): void => {
+        inFlight.set(profile, partial);
+        if (completedUnits !== undefined && totalUnits !== undefined && totalUnits > 0) {
+          unitProgress.set(profile, { completed: completedUnits, total: totalUnits });
+        }
+        publish(label);
+      };
       try {
-        return await worker(profile, accountId);
+        const result = await worker(profile, accountId, report);
+        inFlight.set(profile, result);
+        // A finished profile counts as fully complete, whatever unit it counted in.
+        const units = unitProgress.get(profile);
+        unitProgress.set(profile, { completed: units?.total ?? 1, total: units?.total ?? 1 });
+        publish(`${profile} complete`);
+        return result;
       } catch (error) {
         logger.warn('Section fetch failed for profile', {
           profile,
           reason: (error as Error).message,
         });
-        return {
+        const failure: ProfileScoped<T> = {
           profile,
           ...(accountId ? { accountId } : {}),
           status: 'failed' as const,
@@ -154,8 +223,15 @@ export class DashboardService {
             },
           ],
         };
+        inFlight.set(profile, failure);
+        const units = unitProgress.get(profile);
+        unitProgress.set(profile, { completed: units?.total ?? 1, total: units?.total ?? 1 });
+        publish(`${profile} failed`);
+        return failure;
       }
     });
+
+    return results;
   }
 
   async getBilling(options: SectionFetchOptions): Promise<SectionEnvelope<BillingData>> {
@@ -167,12 +243,15 @@ export class DashboardService {
       'billing',
       selection,
       () =>
-        this.fanOut<BillingData>(selection, (profile, accountId) =>
-          fetchBillingForProfile(this.access, {
-            profile,
-            ...(accountId ? { accountId } : {}),
-            config,
-          })
+        this.fanOut<BillingData>(
+          selection,
+          (profile, accountId) =>
+            fetchBillingForProfile(this.access, {
+              profile,
+              ...(accountId ? { accountId } : {}),
+              config,
+            }),
+          options.onPartial
         ),
       { ...(options.force ? { force: true } : {}), variant }
     );
@@ -195,15 +274,32 @@ export class DashboardService {
       'security',
       selection,
       () =>
-        this.fanOut<SecurityData>(selection, (profile, accountId) =>
-          runSecurityAnalysis({
-            access: this.access,
-            config: this.config,
-            store: this.findings,
-            profile,
-            ...(accountId ? { accountId } : {}),
-            regions: selection.regions,
-          })
+        this.fanOut<SecurityData>(
+          selection,
+          (profile, accountId, report) =>
+            runSecurityAnalysis({
+              access: this.access,
+              config: this.config,
+              store: this.findings,
+              profile,
+              ...(accountId ? { accountId } : {}),
+              regions: selection.regions,
+              // Each completed check publishes what has been found so far.
+              onProgress: (progress) =>
+                report(
+                  {
+                    profile,
+                    ...(accountId ? { accountId } : {}),
+                    status: 'partial',
+                    data: progress.data,
+                    issues: progress.issues,
+                  },
+                  progress.completed,
+                  progress.total,
+                  progress.label
+                ),
+            }),
+          options.onPartial
         ),
       { ...(options.force ? { force: true } : {}), variant }
     );
@@ -239,13 +335,16 @@ export class DashboardService {
       'cloudwatch',
       selection,
       () =>
-        this.fanOut<CloudWatchData>(selection, (profile, accountId) =>
-          fetchCloudWatchInsights(this.access, {
-            profile,
-            ...(accountId ? { accountId } : {}),
-            regions: selection.regions,
-            config,
-          })
+        this.fanOut<CloudWatchData>(
+          selection,
+          (profile, accountId) =>
+            fetchCloudWatchInsights(this.access, {
+              profile,
+              ...(accountId ? { accountId } : {}),
+              regions: selection.regions,
+              config,
+            }),
+          options.onPartial
         ),
       { ...(options.force ? { force: true } : {}), variant }
     );
@@ -269,12 +368,15 @@ export class DashboardService {
       'compute-optimizer',
       selection,
       () =>
-        this.fanOut<ComputeOptimizerData>(selection, (profile, accountId) =>
-          fetchComputeOptimizer(this.access, {
-            profile,
-            ...(accountId ? { accountId } : {}),
-            regions: selection.regions,
-          })
+        this.fanOut<ComputeOptimizerData>(
+          selection,
+          (profile, accountId) =>
+            fetchComputeOptimizer(this.access, {
+              profile,
+              ...(accountId ? { accountId } : {}),
+              regions: selection.regions,
+            }),
+          options.onPartial
         ),
       options.force ? { force: true } : {}
     );

@@ -33,9 +33,69 @@ export const state = {
   },
   usage: null,
   sections: Object.fromEntries(
-    SECTION_KEYS.map((key) => [key, { status: 'idle', data: null, error: null, fetchedAt: null }])
+    SECTION_KEYS.map((key) => [
+      key,
+      { status: 'idle', data: null, error: null, fetchedAt: null, progress: null, jobId: null },
+    ])
   ),
 };
+
+const POLL_INTERVAL_MS = 900;
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * Follows a streaming section job, rendering each snapshot as it arrives so the
+ * user sees real data long before the whole scan finishes.
+ */
+async function pollJob(section, firstSnapshot) {
+  const entry = state.sections[section];
+  let snapshot = firstSnapshot;
+
+  for (;;) {
+    entry.progress = snapshot.progress ?? null;
+
+    if (snapshot.status === 'failed') {
+      entry.status = 'error';
+      entry.error = snapshot.error ?? 'The scan failed.';
+      entry.progress = null;
+      return;
+    }
+
+    if (snapshot.status === 'complete') {
+      const envelope = snapshot.partial?.envelope;
+      if (envelope) {
+        entry.status = 'ready';
+        entry.data = envelope;
+        entry.fetchedAt = envelope.fetchedAt;
+      } else {
+        entry.status = 'error';
+        entry.error = 'The scan finished without returning data.';
+      }
+      entry.progress = null;
+      entry.jobId = null;
+      return;
+    }
+
+    // Still running: show whatever has been collected so far.
+    const partial = snapshot.partial?.partial;
+    if (partial?.profiles?.length) {
+      entry.status = 'partial';
+      entry.data = {
+        section,
+        fetchedAt: new Date().toISOString(),
+        fromCache: false,
+        profiles: partial.profiles,
+        regions: state.selectedRegions,
+        categories: [],
+      };
+    }
+    notify();
+
+    await sleep(POLL_INTERVAL_MS);
+    snapshot = await api.job(snapshot.id);
+  }
+}
 
 const listeners = new Set();
 
@@ -147,14 +207,24 @@ export const actions = {
   invalidateAllSections() {
     state.aiSeverityOverrides = {};
     for (const key of SECTION_KEYS) {
-      state.sections[key] = { status: 'idle', data: null, error: null, fetchedAt: null };
+      state.sections[key] = {
+        status: 'idle',
+        data: null,
+        error: null,
+        fetchedAt: null,
+        progress: null,
+        jobId: null,
+      };
     }
     state.cloudtrail.result = null;
     state.cloudtrail.status = 'idle';
     state.cloudtrail.selectedIds = new Set();
   },
 
-  /** Loads a section, reusing in-memory data on the server unless `force`. */
+  /**
+   * Loads a section. The server streams partial results, so findings are
+   * rendered as each check completes rather than after the slowest one.
+   */
   async loadSection(section, { force = false } = {}) {
     const entry = state.sections[section];
     if (!entry) return;
@@ -168,16 +238,20 @@ export const actions = {
 
     entry.status = 'loading';
     entry.error = null;
+    entry.progress = null;
     notify();
 
     try {
-      const result = await api.section(section, selectionBody(force ? { refresh: true } : {}));
-      entry.status = 'ready';
-      entry.data = result;
-      entry.fetchedAt = result.fetchedAt;
+      const started = await api.section(
+        section,
+        selectionBody({ stream: true, ...(force ? { refresh: true } : {}) })
+      );
+      entry.jobId = started.id;
+      await pollJob(section, started);
     } catch (error) {
       entry.status = 'error';
       entry.error = error.message;
+      entry.progress = null;
     }
     await actions.refreshStatus();
     notify();

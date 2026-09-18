@@ -22,6 +22,7 @@ import { HttpError } from '../util/errors.js';
 import { logger, type LogLevel } from '../util/logger.js';
 import { DashboardService } from './dashboard-service.js';
 import { createApiRouter, PACKAGE_VERSION } from './routes.js';
+import { JobRunner } from './job-runner.js';
 import { readJsonBody, sendJson, serveStatic } from './http.js';
 import { findAvailablePort, DEFAULT_PORT, type PortSelection } from './port.js';
 
@@ -103,9 +104,11 @@ export async function startServer(options: StartServerOptions = {}): Promise<Sta
   const portSelection = await findAvailablePort(options.port ?? DEFAULT_PORT, host);
   const url = `http://${host === '0.0.0.0' ? 'localhost' : host}:${portSelection.port}`;
 
+  const jobs = new JobRunner();
   const router = createApiRouter({
     service,
     ai,
+    jobs,
     serverInfo: () => ({ port: portSelection.port, host, url, startedAt }),
   });
 
@@ -186,6 +189,7 @@ export async function startServer(options: StartServerOptions = {}): Promise<Sta
     profilesDiscovered: profiles.length,
     async close() {
       await new Promise<void>((resolvePromise) => server.close(() => resolvePromise()));
+      jobs.clear();
       access.reset();
     },
   };

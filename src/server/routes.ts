@@ -31,7 +31,8 @@ import { AiUnavailableError, type AiOrchestrator } from '../ai/orchestrator.js';
 import { AiProviderError } from '../ai/providers/types.js';
 import { AiResponseError } from '../ai/response.js';
 import type { CloudTrailSearchFilters, NormalisedEvent } from '../services/cloudtrail.js';
-import type { DashboardService } from './dashboard-service.js';
+import type { DashboardService, SectionPartial } from './dashboard-service.js';
+import { JobRunner } from './job-runner.js';
 import { Router, type RequestContext } from './http.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -67,11 +68,13 @@ function requireBody(context: RequestContext): Record<string, unknown> {
 export interface RouteDependencies {
   service: DashboardService;
   ai: AiOrchestrator;
+  jobs?: JobRunner;
   serverInfo: () => { port: number; host: string; url: string; startedAt: string };
 }
 
 export function createApiRouter(deps: RouteDependencies): Router {
   const { service, ai } = deps;
+  const jobs = deps.jobs ?? new JobRunner();
   const router = new Router();
 
   router.get('/api/status', async () => {
@@ -130,29 +133,69 @@ export function createApiRouter(deps: RouteDependencies): Router {
 
   // ---- AWS sections ----------------------------------------------------
 
+  function fetchSection(
+    section: SectionId,
+    options: Parameters<DashboardService['getBilling']>[0]
+  ): Promise<unknown> {
+    switch (section) {
+      case 'billing':
+        return service.getBilling(options);
+      case 'security':
+        return service.getSecurity(options);
+      case 'cloudwatch':
+        return service.getCloudWatch(options);
+      case 'compute-optimizer':
+        return service.getComputeOptimizer(options);
+      default:
+        throw new HttpError(400, `Section ${section} does not support this route.`);
+    }
+  }
+
   const sectionHandler =
     (section: SectionId) =>
     async (context: RequestContext): Promise<unknown> => {
       const body = (context.body ?? {}) as Record<string, unknown>;
       const force = body.refresh === true || context.url.searchParams.get('refresh') === 'true';
+      const stream = body.stream === true || context.url.searchParams.get('stream') === 'true';
       const options = {
         profiles: asStringArray(body.profiles),
         regions: normaliseRegions(asStringArray(body.regions)),
         ...(force ? { force: true } : {}),
       };
 
-      switch (section) {
-        case 'billing':
-          return service.getBilling(options);
-        case 'security':
-          return service.getSecurity(options);
-        case 'cloudwatch':
-          return service.getCloudWatch(options);
-        case 'compute-optimizer':
-          return service.getComputeOptimizer(options);
-        default:
-          throw new HttpError(400, `Section ${section} does not support this route.`);
-      }
+      if (!stream) return fetchSection(section, options);
+
+      // Streaming mode: start a job, return its first snapshot straight away,
+      // and let the client poll for results as each unit of work completes.
+      const selection = service.resolveSelection(options);
+      return jobs.start<{ envelope: unknown; partial: SectionPartial | null }>({
+        section,
+        key: `${section}|${selection.profiles.join(',')}|${selection.regions.join(',')}|${
+          force ? 'force' : 'cached'
+        }`,
+        initial: { envelope: null, partial: null },
+        run: async (job) => {
+          // A provisional total of one unit per profile, refined by the first
+          // update once the section knows how many units it will run.
+          job.setTotal(Math.max(selection.profiles.length, 1));
+          const envelope = await fetchSection(section, {
+            ...options,
+            // The section counts its own units, so its position is adopted
+            // verbatim rather than incremented here.
+            onPartial: (update) => {
+              job.report(
+                { envelope: null, partial: update },
+                {
+                  completed: update.completed,
+                  total: update.total,
+                  ...(update.label ? { label: update.label } : {}),
+                }
+              );
+            },
+          });
+          return { envelope, partial: null };
+        },
+      });
     };
 
   router.post('/api/sections/billing', sectionHandler('billing'));
@@ -185,6 +228,16 @@ export function createApiRouter(deps: RouteDependencies): Router {
     }
     return { refreshed: requested, results };
   });
+
+  router.get('/api/jobs/:id', (context) => {
+    const job = jobs.get(context.params.id as string);
+    if (!job) throw new HttpError(404, 'No such job. It may have finished and been discarded.');
+    return job;
+  });
+
+  router.delete('/api/jobs/:id', (context) => ({
+    cancelled: jobs.cancel(context.params.id as string),
+  }));
 
   router.post('/api/cloudtrail/search', async (context) => {
     const body = requireBody(context);
