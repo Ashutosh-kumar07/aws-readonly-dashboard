@@ -4,7 +4,11 @@ import { describe, expect, it } from 'vitest';
 
 import { AwsAccessLayer } from '../src/aws/access-layer.js';
 import { ApiCallTracker } from '../src/aws/tracker.js';
-import { classifyAwsError, extractMissingPermission } from '../src/util/errors.js';
+import {
+  classifyAwsError,
+  extractMissingPermission,
+  ReadOnlyViolationError,
+} from '../src/util/errors.js';
 import { FakeClient, awsError, makeCommand } from './helpers.js';
 
 describe('API call accounting', () => {
@@ -392,6 +396,25 @@ describe('AWS error classification', () => {
     );
     expect(classifyAwsError(redirect).kind).toBe('unsupported-region');
     expect(classifyAwsError(redirect).missingPermission).toBeUndefined();
+  });
+
+  it('names a network or TLS failure instead of calling it unexpected', () => {
+    // Every plain Node error is called "Error"; preferring that name over the
+    // specific code left a proxy's TLS interception showing as "unexpected
+    // error", with the useful part hidden.
+    const tls = new Error('self-signed certificate');
+    (tls as NodeJS.ErrnoException).code = 'DEPTH_ZERO_SELF_SIGNED_CERT';
+    const classified = classifyAwsError(tls);
+    expect(classified.kind).toBe('network');
+    expect(classified.code).toBe('DEPTH_ZERO_SELF_SIGNED_CERT');
+    expect(classified.message).toMatch(/HTTPS_PROXY/);
+  });
+
+  it("classifies the access layer's own refusal as a policy refusal", () => {
+    const refused = new ReadOnlyViolationError('s3', 'ListBuckets', 'category "s3" is disabled');
+    const classified = classifyAwsError(refused);
+    expect(classified.kind).toBe('refused-by-policy');
+    expect(classified.message).toContain('disabled');
   });
 
   it('marks throttling and service errors as retryable, permissions as not', () => {

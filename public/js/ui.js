@@ -165,6 +165,24 @@ export function issueList(issues, options = {}) {
             ? el('span', { class: 'mono', text: ` (needs ${entry.issue.missingPermission})` })
             : null,
           el('span', { class: 'subtle', text: ` — ${[...entry.regions].join(', ')}` }),
+          // What actually went wrong. Without it a label such as "unexpected
+          // error" is a dead end: the cause is known, just not shown.
+          entry.issue.message
+            ? el('div', { class: 'subtle issue-detail', text: entry.issue.message })
+            : null,
+          // A limit that stopped a scan short is raised from here, rather than
+          // by sending the reader off to find the setting it is named after.
+          entry.issue.suggestion && options.onApplySuggestion
+            ? el('button', {
+                class: 'button button--small',
+                text: entry.issue.suggestion.label,
+                onClick: (event) => {
+                  event.target.disabled = true;
+                  event.target.textContent = 'Rescanning…';
+                  void options.onApplySuggestion(entry.issue.suggestion);
+                },
+              })
+            : null,
         ])
       )
     ),

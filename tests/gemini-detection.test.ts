@@ -10,7 +10,13 @@ import { describe, expect, it } from 'vitest';
 import { mkdir, writeFile, chmod } from 'node:fs/promises';
 import { join } from 'node:path';
 
-import { resolveCommand, UnsafeCommandError } from '../src/ai/providers/command-resolver.js';
+import {
+  buildInvocation,
+  quoteWindowsArgument,
+  resolveCommand,
+  runCommand,
+  UnsafeCommandError,
+} from '../src/ai/providers/command-resolver.js';
 import { GeminiCliProvider, type Spawner } from '../src/ai/providers/gemini-cli.js';
 import { defaultConfig } from '../src/config/schema.js';
 import { withTempDir } from './helpers.js';
@@ -112,6 +118,120 @@ describe('command resolution', () => {
     ]) {
       await expect(resolveCommand(command)).rejects.toThrow(UnsafeCommandError);
     }
+  });
+});
+
+describe('argument quoting', () => {
+  const INSTRUCTION = 'Follow the instructions above and reply with the JSON object only.';
+
+  /**
+   * Parses a command line back into arguments using the documented Windows C
+   * runtime rules, written independently of the quoting under test. cmd.exe
+   * cannot run here, so the proof that quoting survives is that an independent
+   * parser recovers exactly what went in.
+   */
+  function parseWindowsCommandLine(line: string): string[] {
+    const args: string[] = [];
+    let current = '';
+    let inQuotes = false;
+    let backslashes = 0;
+    let started = false;
+
+    for (const character of line) {
+      if (character === '\\') {
+        backslashes += 1;
+        started = true;
+        continue;
+      }
+      if (character === '"') {
+        // Backslashes are only an escape when they precede a quote: half of
+        // them survive, and an odd count makes the quote literal.
+        current += '\\'.repeat(Math.floor(backslashes / 2));
+        if (backslashes % 2 === 1) current += '"';
+        else inQuotes = !inQuotes;
+        backslashes = 0;
+        started = true;
+        continue;
+      }
+      current += '\\'.repeat(backslashes);
+      backslashes = 0;
+      if (character === ' ' && !inQuotes) {
+        if (started) args.push(current);
+        current = '';
+        started = false;
+        continue;
+      }
+      current += character;
+      started = true;
+    }
+    current += '\\'.repeat(backslashes);
+    if (started) args.push(current);
+    return args;
+  }
+
+  it('round-trips arguments a shell would otherwise split or swallow', () => {
+    const args = [
+      'C:\\Program Files\\gemini\\gemini.cmd',
+      '-p',
+      INSTRUCTION,
+      'say "hi" there',
+      'C:\\trailing\\path\\',
+      'plain',
+    ];
+    const line = args.map(quoteWindowsArgument).join(' ');
+    expect(parseWindowsCommandLine(line)).toEqual(args);
+  });
+
+  it('keeps a multi-word argument as one argument on a Windows shim', () => {
+    // `shell: true` would hand cmd.exe `-p Follow the instructions ...`, so the
+    // CLI sees a flag plus five positionals and refuses: "Cannot use both a
+    // positional prompt and the --prompt (-p) flag together".
+    const plan = buildInvocation('C:\\npm\\gemini.cmd', ['-p', INSTRUCTION], {
+      useShell: true,
+      comSpec: 'C:\\Windows\\system32\\cmd.exe',
+    });
+
+    expect(plan.file).toBe('C:\\Windows\\system32\\cmd.exe');
+    expect(plan.windowsVerbatimArguments).toBe(true);
+    expect(plan.args.slice(0, 3)).toEqual(['/d', '/s', '/c']);
+    expect(plan.args[3]).toBe(`"C:\\npm\\gemini.cmd -p "${INSTRUCTION}""`);
+  });
+
+  it('spawns directly, with no shell, when no shim is involved', () => {
+    const plan = buildInvocation('/usr/bin/gemini', ['-p', INSTRUCTION], { useShell: false });
+    expect(plan).toEqual({
+      file: '/usr/bin/gemini',
+      args: ['-p', INSTRUCTION],
+      windowsVerbatimArguments: false,
+    });
+  });
+
+  it('quotes by the rules the Windows runtime parses back', () => {
+    expect(quoteWindowsArgument('plain')).toBe('plain');
+    expect(quoteWindowsArgument('two words')).toBe('"two words"');
+    expect(quoteWindowsArgument('')).toBe('""');
+    expect(quoteWindowsArgument('say "hi"')).toBe('"say \\"hi\\""');
+    expect(quoteWindowsArgument('C:\\path with space\\')).toBe('"C:\\path with space\\\\"');
+  });
+
+  it('refuses an argument cmd.exe would reinterpret rather than mangling it', () => {
+    expect(() =>
+      buildInvocation('gemini.cmd', ['-p', 'progress is 50%PATH% done'], { useShell: true })
+    ).toThrow(UnsafeCommandError);
+    expect(() => buildInvocation('gemini.cmd', ['-p', 'line\nbreak'], { useShell: true })).toThrow(
+      UnsafeCommandError
+    );
+  });
+
+  it('delivers arguments intact to the process it runs', async () => {
+    const outcome = await runCommand(process.execPath, {
+      args: ['-e', 'process.stdout.write(JSON.stringify(process.argv.slice(1)))', INSTRUCTION],
+      timeoutMs: 10_000,
+      useShell: false,
+    });
+
+    expect(outcome.code).toBe(0);
+    expect(JSON.parse(outcome.stdout)).toEqual([INSTRUCTION]);
   });
 });
 

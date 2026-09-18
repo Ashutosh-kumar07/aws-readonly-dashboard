@@ -7,7 +7,7 @@
 
 import type { ApiCategory } from '../aws/allowlist.js';
 
-export const CONFIG_VERSION = 1;
+export const CONFIG_VERSION = 2;
 
 export const COMPARISON_PERIODS = [1, 7, 14, 30, 60, 90] as const;
 export type ComparisonPeriod = (typeof COMPARISON_PERIODS)[number];
@@ -117,8 +117,9 @@ export interface SecurityConfig {
   /**
    * How many Lambda functions per region the resource-policy check may inspect.
    * Each function costs one `lambda:GetPolicy` call, so this trades AWS API
-   * volume against coverage. 0 disables the per-function policy check entirely;
-   * the VPC check always covers every function regardless.
+   * volume against coverage. 0 means no limit — every function is inspected.
+   * To switch the check off, disable `lambda-public-resource-policy` in
+   * `disabledChecks`. The VPC check always covers every function regardless.
    */
   maxLambdaPolicyLookupsPerRegion: number;
   /**
@@ -313,6 +314,22 @@ type Migration = (config: Record<string, any>) => Record<string, any>;
  */
 export const MIGRATIONS: readonly Migration[] = Object.freeze([
   (config) => ({ ...config, version: 1 }),
+  // Version 2 redefines a Lambda lookup limit of 0 as "inspect every
+  // function". A stored 0 meant "switch the check off", so that intent is
+  // carried over to the check list, which is where switching a check off
+  // belongs, rather than being silently turned into a full scan.
+  (config) => {
+    const security = { ...((config.security as Record<string, any>) ?? {}) };
+    if (security.maxLambdaPolicyLookupsPerRegion === 0) {
+      const disabled = new Set<string>(
+        Array.isArray(security.disabledChecks) ? security.disabledChecks : []
+      );
+      disabled.add('lambda-public-resource-policy');
+      security.disabledChecks = [...disabled];
+      security.maxLambdaPolicyLookupsPerRegion = 100;
+    }
+    return { ...config, security, version: 2 };
+  },
 ]);
 
 function clamp(value: unknown, min: number, max: number, fallback: number): number {

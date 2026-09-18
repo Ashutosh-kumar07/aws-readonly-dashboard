@@ -556,7 +556,7 @@ function scanLimitsCard(state, actions) {
           }),
           el('p', {
             class: 'subtle',
-            text: 'One lambda:GetPolicy call per function. 0 disables the public-policy check. The "outside a VPC" check always covers every function.',
+            text: 'One lambda:GetPolicy call per function. 0 means no limit — every function is inspected. To switch this check off entirely, disable it under Security checks. The "outside a VPC" check always covers every function.',
           }),
         ]),
         el('div', { class: 'field' }, [
@@ -576,7 +576,10 @@ function scanLimitsCard(state, actions) {
               await actions.loadSection('security', { force: true });
             },
           }),
-          el('p', { class: 'subtle', text: 'Up to five read calls per bucket.' }),
+          el('p', {
+            class: 'subtle',
+            text: 'Up to five read calls per bucket. Anything beyond the limit is reported as partially evaluated, never as clean.',
+          }),
         ]),
         el('div', { class: 'field' }, [
           el('label', { for: 'limit-loggroups', text: 'Log groups per region' }),

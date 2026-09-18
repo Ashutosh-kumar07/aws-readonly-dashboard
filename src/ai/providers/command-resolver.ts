@@ -3,11 +3,17 @@
  *
  * The hard case is Windows. `npm install -g @google/gemini-cli` installs a
  * `gemini.cmd` batch shim, and Node cannot execute `.cmd` or `.bat` files
- * through `child_process.spawn` unless `shell` is set — since the fix for
+ * through `child_process.spawn` unless a shell is involved — since the fix for
  * CVE-2024-27980 it refuses outright. A CLI that works perfectly in the user's
  * terminal therefore fails with ENOENT when the dashboard spawns it, which is
  * exactly the "installed but reported as missing" symptom this module exists to
  * prevent.
+ *
+ * The trap on the other side is `shell: true`, which does not quote anything:
+ * Node joins the arguments with spaces and hands the result to the shell, so
+ * `['-p', 'two words']` arrives as `-p two words` — a flag plus two positional
+ * arguments. This module therefore builds the `cmd.exe` command line itself and
+ * quotes every argument, so an argument is still one argument on the other side.
  */
 
 import { spawn } from 'node:child_process';
@@ -25,7 +31,7 @@ const SHELL_METACHARACTERS = /[&|;<>()$`\n\r"'^*?[\]{}!~]/;
 export interface ResolvedCommand {
   /** The command to hand to `spawn`. */
   command: string;
-  /** Whether the command must be run through a shell (Windows shims). */
+  /** Whether the command must be launched through cmd.exe (Windows shims). */
   useShell: boolean;
   /** Absolute path when the executable could be located, for diagnostics. */
   resolvedPath?: string;
@@ -37,7 +43,7 @@ export class UnsafeCommandError extends Error {
   override readonly name = 'UnsafeCommandError';
 }
 
-/** Windows executable extensions that require a shell to launch. */
+/** Windows executable extensions that cannot be spawned directly. */
 const SHELL_REQUIRED_EXTENSIONS = ['.cmd', '.bat'];
 
 /** Extensions Windows will try when a bare command name is given. */
@@ -114,10 +120,91 @@ export async function resolveCommand(
     }
   }
 
-  // Not found on PATH. On Windows, still go through a shell: the shim may be
+  // Not found on PATH. On Windows, still go through cmd.exe: the shim may be
   // reachable via a PATH entry this process cannot read, and cmd.exe resolves
   // .cmd files that spawn cannot.
   return { command, useShell: isWindows, source: 'bare-command' };
+}
+
+/**
+ * Characters that cmd.exe would act on even inside a quoted argument: `%` and
+ * `!` are expanded as variables, and a newline ends the command. There is no
+ * escape that survives every configuration, so an argument containing one is
+ * refused rather than silently mangled.
+ */
+const CMD_UNQUOTABLE = /[%!\r\n]/;
+
+/**
+ * Quotes one argument the way the Windows C runtime parses it back: wrap in
+ * double quotes, double any backslashes that precede a quote, and escape the
+ * quotes themselves.
+ */
+export function quoteWindowsArgument(argument: string): string {
+  if (argument === '') return '""';
+  if (!/[\s"]/.test(argument)) return argument;
+
+  let quoted = '"';
+  let backslashes = 0;
+  for (const character of argument) {
+    if (character === '\\') {
+      backslashes += 1;
+      continue;
+    }
+    if (character === '"') {
+      quoted += '\\'.repeat(backslashes * 2 + 1) + '"';
+      backslashes = 0;
+      continue;
+    }
+    quoted += '\\'.repeat(backslashes) + character;
+    backslashes = 0;
+  }
+  return `${quoted}${'\\'.repeat(backslashes * 2)}"`;
+}
+
+export interface SpawnPlan {
+  /** The executable to spawn. */
+  file: string;
+  /** Arguments exactly as `spawn` should receive them. */
+  args: string[];
+  /** True when `args` is a pre-built command line that Node must not re-quote. */
+  windowsVerbatimArguments: boolean;
+}
+
+/**
+ * Decides how to invoke a resolved command.
+ *
+ * Everywhere but a Windows shim this is a direct, shell-free spawn. For a
+ * `.cmd` or `.bat` the invocation goes through `cmd.exe /d /s /c` with a
+ * command line this function builds and quotes, which is what `shell: true`
+ * fails to do.
+ */
+export function buildInvocation(
+  command: string,
+  args: readonly string[],
+  options: { useShell: boolean; comSpec?: string }
+): SpawnPlan {
+  if (!options.useShell) {
+    return { file: command, args: [...args], windowsVerbatimArguments: false };
+  }
+
+  for (const argument of [command, ...args]) {
+    if (CMD_UNQUOTABLE.test(argument)) {
+      throw new UnsafeCommandError(
+        'An argument for the Gemini CLI contains a character Windows command ' +
+          `processing would reinterpret (% ! or a line break): ${argument.slice(0, 80)}. ` +
+          'Remove it from the command or arguments in Settings.'
+      );
+    }
+  }
+
+  // `/d` skips AutoRun scripts, `/s` gives the documented "strip the outer
+  // quotes and run the rest verbatim" parsing, `/c` runs and exits.
+  const commandLine = [command, ...args].map(quoteWindowsArgument).join(' ');
+  return {
+    file: options.comSpec ?? process.env.ComSpec ?? 'cmd.exe',
+    args: ['/d', '/s', '/c', `"${commandLine}"`],
+    windowsVerbatimArguments: true,
+  };
 }
 
 export interface SpawnOutcome {
@@ -149,13 +236,15 @@ export function runCommand(command: string, options: RunOptions): Promise<SpawnO
     let timedOut = false;
     let settled = false;
 
-    const child = spawn(command, options.args, {
+    const plan = buildInvocation(command, options.args, { useShell: options.useShell });
+
+    const child = spawn(plan.file, plan.args, {
       stdio: ['pipe', 'pipe', 'pipe'],
       // The environment is inherited so the CLI's existing authentication applies.
       env: options.env ?? process.env,
-      // Windows shims (.cmd) can only be launched through a shell. The command
-      // and arguments are validated by resolveCommand before reaching here.
-      shell: options.useShell,
+      // Never `shell: true`: it would join the arguments with spaces and lose
+      // the quoting. A Windows shim goes through the cmd.exe line built above.
+      windowsVerbatimArguments: plan.windowsVerbatimArguments,
       windowsHide: true,
     });
 

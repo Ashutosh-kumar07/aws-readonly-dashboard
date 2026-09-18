@@ -185,6 +185,11 @@ function checkStatusTable(checks) {
                     text: `needs ${row.issues[0].missingPermission}`,
                   })
                 : null,
+              // The message AWS (or the dashboard) actually gave, so a generic
+              // label is still diagnosable without opening the network tab.
+              row.issues[0]?.message
+                ? el('div', { class: 'subtle issue-detail', text: row.issues[0].message })
+                : null,
             ]),
         },
       ],
@@ -199,6 +204,10 @@ function renderProfile(profile, state, actions) {
 
   const issues = issueList(profile.issues, {
     title: 'Some security checks could not be completed',
+    onApplySuggestion: async (suggestion) => {
+      await actions.persist({ security: { [suggestion.setting]: suggestion.value } });
+      await actions.loadSection('security', { force: true });
+    },
   });
   if (issues) body.append(issues);
 

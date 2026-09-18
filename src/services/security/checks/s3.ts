@@ -503,7 +503,12 @@ export const s3PublicAccessCheck: SecurityCheck = {
         label: `Partially evaluated — ${inspected.length} of ${bucketNames.length} buckets inspected`,
         message:
           `${bucketNames.length - inspected.length} bucket(s) were not examined, because the scan limit was reached. ` +
-          'Raise "S3 buckets per scan" in Settings to cover them, at the cost of more AWS API calls.',
+          'Inspecting them all costs up to five read calls per bucket; results appear as the scan runs.',
+        suggestion: {
+          setting: 'maxBucketsPerScan',
+          value: bucketNames.length,
+          label: `Inspect all ${bucketNames.length} buckets`,
+        },
       });
     }
 

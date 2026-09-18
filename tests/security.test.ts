@@ -273,17 +273,43 @@ describe('lambda checks', () => {
     expect(result.issues).toHaveLength(0);
   });
 
-  it('reports the policy check as not evaluated when the limit is zero', async () => {
-    const client = new FakeClient({ ListFunctions: { Functions: [{ FunctionName: 'fn' }] } });
-    const layer = new AwsAccessLayer({ clientFactory: () => client as never });
+  it('inspects every function when the limit is zero, which now means no limit', async () => {
+    const functions = Array.from({ length: 529 }, (_, index) => ({ FunctionName: `fn-${index}` }));
+    const client = new FakeClient({
+      ListFunctions: { Functions: functions },
+      GetPolicy: awsError('ResourceNotFoundException', 'no policy'),
+    });
+    const layer = new AwsAccessLayer({ clientFactory: () => client as never, maxRetries: 0 });
     const config = defaultConfig();
     config.security.maxLambdaPolicyLookupsPerRegion = 0;
 
     const result = await lambdaPublicPolicyCheck.run(context(layer, { config }));
 
-    expect(result.evaluated).toBe(false);
-    expect(result.findings).toHaveLength(0);
-    expect(result.issues[0]?.label).toMatch(/disabled/i);
+    expect(result.resourcesEvaluated).toBe(529);
+    expect(result.truncated).toBe(false);
+    expect(result.issues).toHaveLength(0);
+  });
+
+  it('offers to inspect every function when the limit stopped the scan short', async () => {
+    const functions = Array.from({ length: 529 }, (_, index) => ({ FunctionName: `fn-${index}` }));
+    const client = new FakeClient({
+      ListFunctions: { Functions: functions },
+      GetPolicy: awsError('ResourceNotFoundException', 'no policy'),
+    });
+    const layer = new AwsAccessLayer({ clientFactory: () => client as never, maxRetries: 0 });
+    const config = defaultConfig();
+    config.security.maxLambdaPolicyLookupsPerRegion = 100;
+
+    const result = await lambdaPublicPolicyCheck.run(context(layer, { config }));
+
+    const partial = result.issues.find((issue) => issue.label.startsWith('Partially evaluated'));
+    expect(partial?.label).toContain('100 of 529');
+    // Naming the setting is not much use if acting on it means hunting for it.
+    expect(partial?.suggestion).toEqual({
+      setting: 'maxLambdaPolicyLookupsPerRegion',
+      value: 0,
+      label: 'Inspect every function (529 in this region)',
+    });
   });
 
   it('finds a public function policy within the inspected set', async () => {

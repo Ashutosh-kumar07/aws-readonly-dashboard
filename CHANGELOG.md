@@ -5,6 +5,49 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] - 2026-09-18
+
+### Fixed
+
+- **Analyze failed on Windows with "Cannot use both a positional prompt and the
+  --prompt (-p) flag together".** 1.1.0 launched the Gemini CLI through a shell so
+  that Windows `.cmd` shims would run, and Node does not quote arguments when it
+  does that — it joins them with spaces, so `['-p', 'Follow the instructions…']`
+  arrived as a flag plus five positional arguments. The shell is gone: a Windows
+  shim is now launched through `cmd.exe /d /s /c` with a command line the dashboard
+  builds and quotes itself. Detection was unaffected because `--version` takes no
+  arguments, which is why the CLI showed as *Available* and only Analyze failed.
+- An argument containing something Windows command processing would reinterpret
+  (`%`, `!`, a line break) is refused with an explanation rather than mangled.
+- **"Unable to evaluate — unexpected error" hid the reason.** Error classification
+  preferred `error.name`, which is the useless string `Error` for every plain Node
+  failure, so the specific code beside it was never read. A proxy's TLS
+  interception, a refused connection and an unreachable host all landed in
+  "unexpected". They are now reported as **network or TLS failure**, naming the
+  code and pointing out that the AWS CLI reads `HTTPS_PROXY` automatically while
+  the AWS SDK for JavaScript does not.
+- A refusal by the read-only access layer (for example an API category disabled in
+  configuration) is reported as such instead of as an unexpected error.
+
+### Added
+
+- **Every "unable to evaluate" row now shows the underlying message**, in both the
+  security table and the section notices. The cause was always in the payload and
+  never on the screen, which left "unexpected error" impossible to act on.
+- **One-click coverage.** The notice that reports partial coverage now carries the
+  action it was describing — *Inspect every function*, *Inspect all N buckets* —
+  which raises the limit and rescans. Progressive loading means the longer scan
+  shows its results as it goes.
+
+### Changed
+
+- `security.maxLambdaPolicyLookupsPerRegion: 0` now means **no limit** rather than
+  "switch the check off"; disabling a check belongs in the check list, where it
+  already lived. A configuration migration moves the old intent across: a stored `0`
+  disables `lambda-public-resource-policy` and restores the default limit, so nobody
+  who meant "off" gets a full scan of every function in every region.
+- Settings copy for the scan limits updated to match.
+
 ## [1.1.0] - 2026-09-18
 
 ### Added
@@ -167,5 +210,6 @@ First public release.
 - 255 automated tests covering AWS safety, credentials, billing, security,
   CloudWatch, CloudTrail, AI behaviour and local configuration.
 
+[1.2.0]: https://github.com/Ashutosh-kumar07/aws-readonly-dashboard/releases/tag/v1.2.0
 [1.1.0]: https://github.com/Ashutosh-kumar07/aws-readonly-dashboard/releases/tag/v1.1.0
 [1.0.0]: https://github.com/Ashutosh-kumar07/aws-readonly-dashboard/releases/tag/v1.0.0

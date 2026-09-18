@@ -1003,3 +1003,12 @@ pre.code-block {
     padding: 0.85rem;
   }
 }
+
+/* The underlying failure text under an "unable to evaluate" row. Long AWS
+   messages wrap rather than stretching the table. */
+.issue-detail {
+  margin-top: 0.15rem;
+  max-width: 68ch;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}

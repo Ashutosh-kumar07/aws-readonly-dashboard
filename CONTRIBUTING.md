@@ -45,11 +45,13 @@ will not be merged, however convenient it is.
    say so — progress and the "still scanning" banner exist so an incomplete scan is
    never mistaken for a finished one. Progress counts must be real positions
    reported by the work itself, never interpolated or estimated.
-9. **External commands are resolved, never guessed.** Anything spawned as a child
-   process goes through `src/ai/providers/command-resolver.ts`, which resolves the
-   executable against `PATH`/`PATHEXT`, decides whether a shell is genuinely
-   required (Windows `.cmd`/`.bat`), and refuses commands containing shell
-   metacharacters. Do not call `spawn` with `shell: true` anywhere else.
+9. **External commands are resolved and quoted, never guessed.** Anything spawned as
+   a child process goes through `src/ai/providers/command-resolver.ts`, which
+   resolves the executable against `PATH`/`PATHEXT` and builds the `cmd.exe`
+   command line itself for Windows shims (`.cmd`/`.bat`), quoting every argument.
+   **Never pass `shell: true` to `spawn`.** It does not quote: Node joins the
+   arguments with spaces, so `['-p', 'two words']` reaches the program as a flag
+   plus two positional arguments.
 
 ## Long-running sections
 

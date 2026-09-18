@@ -14,6 +14,8 @@ export type AwsErrorKind =
   | 'unsupported-region'
   | 'throttling'
   | 'timeout'
+  | 'network'
+  | 'refused-by-policy'
   | 'not-found'
   | 'invalid-request'
   | 'unknown';
@@ -119,6 +121,28 @@ const REGION_MISMATCH_CODES = new Set([
   'IllegalLocationConstraintException',
 ]);
 
+/**
+ * Failures below the API: TLS interception by a corporate proxy, a refused or
+ * broken connection, an unreachable host. The AWS CLI reads `HTTPS_PROXY` by
+ * itself and the AWS SDK for JavaScript does not, which is why these show up
+ * here for people whose CLI works fine.
+ */
+const NETWORK_CODES = new Set([
+  'SELF_SIGNED_CERT_IN_CHAIN',
+  'DEPTH_ZERO_SELF_SIGNED_CERT',
+  'UNABLE_TO_VERIFY_LEAF_SIGNATURE',
+  'UNABLE_TO_GET_ISSUER_CERT_LOCALLY',
+  'CERT_HAS_EXPIRED',
+  'ERR_TLS_CERT_ALTNAME_INVALID',
+  'EPROTO',
+  'ECONNABORTED',
+  'EHOSTUNREACH',
+  'ENETUNREACH',
+  'EPIPE',
+  'ERR_SOCKET_CONNECTION_TIMEOUT',
+  'ERR_PROXY_CONNECTION_FAILED',
+]);
+
 const TIMEOUT_CODES = new Set([
   'TimeoutError',
   'RequestTimeout',
@@ -131,15 +155,24 @@ const TIMEOUT_CODES = new Set([
   'NetworkingError',
 ]);
 
+/**
+ * Codes that carry no information: every plain Node error is named `Error`, so
+ * preferring `name` hides the specific `code` beside it and turns a nameable
+ * network or TLS failure into "unexpected error".
+ */
+const GENERIC_ERROR_NAMES = new Set(['Error', 'TypeError', 'Exception', '']);
+
 function extractCode(error: any): string | undefined {
-  return (
-    error?.name ??
-    error?.Code ??
-    error?.code ??
-    error?.__type ??
-    error?.$metadata?.code ??
-    undefined
-  );
+  const candidates = [
+    error?.name,
+    error?.Code,
+    error?.code,
+    error?.__type,
+    error?.$metadata?.code,
+  ].filter((value): value is string => typeof value === 'string' && value !== '');
+
+  const specific = candidates.find((value) => !GENERIC_ERROR_NAMES.has(value));
+  return specific ?? candidates[0];
 }
 
 /** Pulls `iam:PassRole`-style action names out of an AWS access-denied message. */
@@ -170,6 +203,11 @@ export function classifyAwsError(error: unknown): ClassifiedAwsError {
 
   const base = { code, statusCode, ...(missingPermission ? { missingPermission } : {}) };
 
+  // The access layer's own refusal. Matched by name so the taxonomy does not
+  // have to import the error class it is declared alongside.
+  if (code === 'ReadOnlyViolationError') {
+    return { ...base, kind: 'refused-by-policy', retryable: false, message: rawMessage };
+  }
   if (code && ACCESS_DENIED_CODES.has(code)) {
     return {
       ...base,
@@ -207,6 +245,16 @@ export function classifyAwsError(error: unknown): ClassifiedAwsError {
   }
   if (code && TIMEOUT_CODES.has(code)) {
     return { ...base, kind: 'timeout', retryable: true, message: rawMessage };
+  }
+  if (code && NETWORK_CODES.has(code)) {
+    return {
+      ...base,
+      kind: 'network',
+      retryable: false,
+      message:
+        `${rawMessage} (${code}). ` +
+        'The request did not reach AWS. If you are behind a corporate proxy, note that the AWS CLI reads HTTPS_PROXY automatically but the AWS SDK for JavaScript does not.',
+    };
   }
   if (code && REGION_MISMATCH_CODES.has(code)) {
     return {
@@ -251,6 +299,8 @@ export const ERROR_KIND_LABEL: Record<AwsErrorKind, string> = {
   'unsupported-region': 'Unable to evaluate — not supported in this region',
   throttling: 'Unable to evaluate — AWS throttled the request',
   timeout: 'Unable to evaluate — request timed out',
+  network: 'Unable to evaluate — network or TLS failure',
+  'refused-by-policy': 'Unable to evaluate — refused by the read-only policy',
   'not-found': 'Unable to evaluate — resource or configuration not found',
   'invalid-request': 'Unable to evaluate — request rejected by AWS',
   unknown: 'Unable to evaluate — unexpected error',

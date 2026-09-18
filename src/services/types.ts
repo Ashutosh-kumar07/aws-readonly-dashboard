@@ -35,6 +35,19 @@ export interface EvaluationIssue {
   message: string;
   missingPermission?: string;
   requiredPermission?: string;
+  /**
+   * An offer the dashboard can act on directly, such as raising a scan limit
+   * that stopped a check short. Naming the setting is not much use if acting on
+   * it means hunting through Settings.
+   */
+  suggestion?: {
+    /** Key within `security` configuration. */
+    setting: 'maxLambdaPolicyLookupsPerRegion' | 'maxBucketsPerScan';
+    /** Value to store when the offer is accepted. 0 means "no limit". */
+    value: number;
+    /** Button text, e.g. "Inspect all 529 functions". */
+    label: string;
+  };
 }
 
 export function issueFromError(

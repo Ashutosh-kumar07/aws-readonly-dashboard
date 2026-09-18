@@ -142,27 +142,6 @@ export const lambdaPublicPolicyCheck: SecurityCheck = {
 
     const limit = context.config.security.maxLambdaPolicyLookupsPerRegion ?? DEFAULT_POLICY_LOOKUPS;
 
-    if (limit === 0) {
-      return {
-        findings: [],
-        issues: [
-          {
-            profile: context.profile,
-            ...(context.accountId ? { accountId: context.accountId } : {}),
-            region: context.region,
-            service: 'Lambda',
-            check: POLICY_CHECK_ID,
-            kind: 'unknown',
-            label: 'Not evaluated — per-function policy lookups are disabled',
-            message:
-              'The Lambda resource-policy check is switched off in Settings (limit set to 0), so public function policies were not evaluated.',
-          },
-        ],
-        evaluated: false,
-        resourcesEvaluated: 0,
-      };
-    }
-
     const client = context.access.client('lambda', LambdaClient, {
       profile: context.profile,
       region: context.region,
@@ -172,7 +151,9 @@ export const lambdaPublicPolicyCheck: SecurityCheck = {
     const ordered = [...functions].sort((a, b) =>
       String(b.LastModified ?? '').localeCompare(String(a.LastModified ?? ''))
     );
-    const inspected = ordered.slice(0, limit);
+    // 0 means no limit: inspect every function. Results stream in as each
+    // check finishes, so a long scan shows its findings while it runs.
+    const inspected = limit === 0 ? ordered : ordered.slice(0, limit);
     const issues: EvaluationIssue[] = [];
     const findings: CheckResult['findings'] = [];
     let permissionDenied = false;
@@ -259,7 +240,12 @@ export const lambdaPublicPolicyCheck: SecurityCheck = {
         label: `Partially evaluated — ${inspected.length} of ${functions.length} functions inspected`,
         message:
           `The resource policies of ${functions.length - inspected.length} function(s) in this region were not read, because the per-region ` +
-          'lookup limit was reached. Raise "Lambda policy lookups per region" in Settings to cover them, at the cost of more AWS API calls.',
+          'lookup limit was reached. Inspecting them all costs one lambda:GetPolicy call per function; results appear as the scan runs.',
+        suggestion: {
+          setting: 'maxLambdaPolicyLookupsPerRegion',
+          value: 0,
+          label: `Inspect every function (${functions.length} in this region)`,
+        },
       });
     }
 

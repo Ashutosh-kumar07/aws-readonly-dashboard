@@ -677,6 +677,12 @@ On Windows the CLI is `gemini.cmd`; the dashboard resolves that through `PATH` a
 Settings at an absolute path, point it at the real executable — a command containing
 shell metacharacters is refused rather than run through a shell.
 
+**“Cannot use both a positional prompt and the --prompt (-p) flag together”**
+A Windows-only fault in 1.1.0, fixed in 1.2.0: the CLI was launched through a shell,
+and Node does not quote arguments when it does that, so a multi-word instruction
+arrived as a flag followed by several positional arguments. Upgrade with
+`npm install -g aws-readonly-dashboard@latest`.
+
 **“Gemini CLI: Not authenticated”**
 The CLI is installed and runs, but has no credentials. Run `gemini` once in a
 terminal and complete the sign-in, or set `GEMINI_API_KEY` in the environment the
@@ -687,6 +693,17 @@ installing the CLI again will not fix it.
 Check the endpoint URL, headers and response path in Settings. A configured response
 path that does not exist in the response is reported as an error rather than being
 guessed around. Use **Preview payload** to inspect the exact request first.
+
+**“Unable to evaluate — network or TLS failure”**
+The request never reached AWS. The usual cause is a corporate proxy that re-signs
+TLS traffic: the AWS CLI reads `HTTPS_PROXY` automatically, the AWS SDK for
+JavaScript does not, so the CLI can work where the dashboard does not. The exact
+cause — certificate, connection or DNS — is printed under the label.
+
+**An “unexpected error” with no explanation**
+Every "unable to evaluate" row now prints the underlying message underneath it. If a
+row still says only *unexpected error*, the message beneath it is what AWS or the
+dashboard actually reported; include that line in a bug report.
 
 **S3 checks report timeouts, or say a permission is missing when it is not**
 A failed AWS call is reported by what actually failed. "Request timed out" means
@@ -705,6 +722,14 @@ timeouts here:
 - Raise the per-request deadline only if your network is genuinely slow; a timed-out
   request is now cancelled rather than left running, so a slow endpoint no longer
   starves later calls of connections.
+
+**Only some Lambda functions or S3 buckets were inspected**
+Scans are bounded so they cannot silently cost thousands of AWS calls. The notice
+that reports partial coverage carries a button — *Inspect every function*, *Inspect
+all N buckets* — that raises the limit and rescans; results stream in as the scan
+runs. The same limits live in **Settings → Security scan limits**, where `0` for the
+Lambda lookups means "no limit". To switch a check off entirely, disable it under
+**Security checks** instead.
 
 **A bucket is listed as "partially evaluated"**
 One of the five reads for that bucket did not return a definitive answer, so the

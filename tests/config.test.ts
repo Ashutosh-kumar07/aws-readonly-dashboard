@@ -160,6 +160,28 @@ describe('configuration migration', () => {
     expect(migratedFrom).toBeUndefined();
   });
 
+  it('keeps "off" meaning off when a Lambda limit of 0 changes meaning', () => {
+    // Version 2 redefines 0 as "inspect every function". A stored 0 meant the
+    // opposite, so the intent moves to the check list rather than silently
+    // becoming a full scan of every function in every region.
+    const { config } = migrateConfig({
+      version: 1,
+      security: { maxLambdaPolicyLookupsPerRegion: 0 },
+    });
+
+    expect(config.security.disabledChecks).toContain('lambda-public-resource-policy');
+    expect(config.security.maxLambdaPolicyLookupsPerRegion).toBe(100);
+  });
+
+  it('leaves a non-zero Lambda limit alone', () => {
+    const { config } = migrateConfig({
+      version: 1,
+      security: { maxLambdaPolicyLookupsPerRegion: 250, disabledChecks: [] },
+    });
+    expect(config.security.maxLambdaPolicyLookupsPerRegion).toBe(250);
+    expect(config.security.disabledChecks).toEqual([]);
+  });
+
   it('falls back to defaults for a non-object document', () => {
     expect(migrateConfig('nonsense').config.version).toBe(CONFIG_VERSION);
     expect(migrateConfig(null).config.billing.comparisonDays).toBe(7);
