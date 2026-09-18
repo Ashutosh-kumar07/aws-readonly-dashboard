@@ -62,6 +62,8 @@ export interface GeminiConfig {
   args: string[];
   model?: string;
   timeoutMs: number;
+  /** How long the startup capability probe may take. CLIs can be slow to boot. */
+  probeTimeoutMs: number;
 }
 
 export interface AiHistoryConfig {
@@ -270,6 +272,7 @@ export function defaultConfig(): AppConfig {
         command: 'gemini',
         args: [],
         timeoutMs: 120_000,
+        probeTimeoutMs: 20_000,
       },
       custom: {
         enabled: false,
@@ -518,6 +521,12 @@ export function normaliseConfig(raw: unknown): AppConfig {
           ? { model: input.ai.gemini.model }
           : {}),
         timeoutMs: clamp(input.ai?.gemini?.timeoutMs, 5_000, 900_000, base.ai.gemini.timeoutMs),
+        probeTimeoutMs: clamp(
+          input.ai?.gemini?.probeTimeoutMs,
+          1_000,
+          120_000,
+          base.ai.gemini.probeTimeoutMs
+        ),
       },
       custom: {
         enabled: input.ai?.custom?.enabled === true,
