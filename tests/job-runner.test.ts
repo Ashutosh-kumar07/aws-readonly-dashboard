@@ -208,7 +208,11 @@ describe('JobRunner', () => {
   });
 
   it('discards a finished job once the retention window has passed', async () => {
-    const runner = new JobRunner(0);
+    // The clock is driven by the test: deciding retention on real elapsed
+    // milliseconds makes the outcome depend on how busy the machine is.
+    let clock = 1_000;
+    const runner = new JobRunner(60_000, () => clock);
+
     const first = runner.start<number>({
       section: 'billing',
       key: 'r1',
@@ -216,9 +220,11 @@ describe('JobRunner', () => {
       run: async () => 1,
     });
     await runner.wait(first.id);
-    // Let the clock move past the (zero) retention window; the sweep runs when
-    // the next job settles.
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(runner.get(first.id)).toBeDefined();
+
+    // Well past the retention window for the first job, and the sweep that runs
+    // when the next job settles should drop it — but not the fresh one.
+    clock += 120_000;
     const second = runner.start<number>({
       section: 'billing',
       key: 'r2',
@@ -227,6 +233,7 @@ describe('JobRunner', () => {
     });
     await runner.wait(second.id);
     await settle();
+
     expect(runner.get(first.id)).toBeUndefined();
     expect(runner.get(second.id)).toBeDefined();
   });

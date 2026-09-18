@@ -62,6 +62,8 @@ interface JobRecord<T> {
   snapshot: JobSnapshot<T>;
   cancelled: boolean;
   promise: Promise<void>;
+  /** When the job settled, by the runner's clock. Undefined while running. */
+  finishedAtMs?: number;
 }
 
 const DEFAULT_RETENTION_MS = 10 * 60 * 1000;
@@ -71,7 +73,15 @@ export class JobRunner {
   /** Jobs currently running, keyed by caller-supplied dedupe key. */
   private readonly byKey = new Map<string, string>();
 
-  constructor(private readonly retentionMs = DEFAULT_RETENTION_MS) {}
+  /**
+   * `now` is injectable so retention can be tested by moving the clock rather
+   * than by sleeping and hoping: a sweep decided on real elapsed milliseconds
+   * is a coin toss on a loaded machine.
+   */
+  constructor(
+    private readonly retentionMs = DEFAULT_RETENTION_MS,
+    private readonly now: () => number = Date.now
+  ) {}
 
   /**
    * Starts a job and returns its first snapshot immediately. When `key` matches
@@ -164,6 +174,7 @@ export class JobRunner {
         });
       })
       .finally(() => {
+        record.finishedAtMs = this.now();
         snapshot.finishedAt = new Date().toISOString();
         snapshot.updatedAt = snapshot.finishedAt;
         if (this.byKey.get(options.key) === id) this.byKey.delete(options.key);
@@ -190,11 +201,11 @@ export class JobRunner {
   }
 
   /** Drops finished jobs once they are older than the retention window. */
-  private sweep(now = Date.now()): void {
+  private sweep(now = this.now()): void {
     for (const [id, record] of this.jobs) {
       if (record.snapshot.status === 'running') continue;
-      const finished = Date.parse(record.snapshot.finishedAt ?? record.snapshot.updatedAt);
-      if (Number.isFinite(finished) && now - finished > this.retentionMs) this.jobs.delete(id);
+      const finished = record.finishedAtMs;
+      if (finished !== undefined && now - finished > this.retentionMs) this.jobs.delete(id);
     }
   }
 
