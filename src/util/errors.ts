@@ -251,3 +251,18 @@ export class HttpError extends Error {
     super(message);
   }
 }
+
+/**
+ * Thrown by long-running work when the job driving it has been cancelled.
+ *
+ * It is control flow, not a failure: the runner ends the job as `cancelled`
+ * rather than `failed`, and because the fetch rejects, a half-finished scan is
+ * never stored in the section cache and never rendered as a complete result.
+ */
+export class JobCancelledError extends Error {
+  override readonly name = 'JobCancelledError';
+
+  constructor(message = 'Cancelled before the scan finished.') {
+    super(message);
+  }
+}

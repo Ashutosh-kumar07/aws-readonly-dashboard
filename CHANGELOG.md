@@ -17,8 +17,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **"Still scanning — these results are incomplete" banner**, so a partial view can
   never be mistaken for a finished one.
 - Job API: `stream: true` on the section routes, `GET /api/jobs/:id` to poll, and
-  `DELETE /api/jobs/:id` to cancel. Identical in-flight requests are de-duplicated
-  rather than starting a second scan.
+  `DELETE /api/jobs/:id` to cancel. Cancellation is honoured by the work itself:
+  the scan stops at the next check boundary, makes no further AWS calls, and the
+  half-finished result is neither cached nor shown as complete. Identical in-flight
+  requests are de-duplicated rather than starting a second scan.
 - **"Gemini CLI: Not authenticated"** as a distinct startup state, separate from
   Non-LLM mode: an installed-but-unauthenticated CLI is a different problem with a
   different fix, and is now reported as such.
@@ -26,8 +28,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `PATH`/`PATHEXT` lookup, an explicit refusal for commands containing shell
   metacharacters, and `ENOENT`/`EACCES`-specific guidance.
 - Dependabot configuration for GitHub Actions and npm dependencies.
-- 41 new tests (296 total), covering the job runner and Gemini CLI detection,
-  including Windows `.cmd` resolution and an oversized-prompt argument-length check.
+- 44 new tests (299 total), covering the job runner, cancellation and Gemini CLI
+  detection, including Windows `.cmd` resolution and an oversized-prompt
+  argument-length check.
 
 ### Fixed
 

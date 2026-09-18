@@ -55,6 +55,18 @@ async function pollJob(section, firstSnapshot) {
   for (;;) {
     entry.progress = snapshot.progress ?? null;
 
+    if (snapshot.status === 'cancelled') {
+      // The scan stopped on request. Partial data is dropped rather than left
+      // on screen, where it would read as a finished result.
+      entry.status = 'idle';
+      entry.data = null;
+      entry.error = null;
+      entry.progress = null;
+      entry.jobId = null;
+      notify();
+      return;
+    }
+
     if (snapshot.status === 'failed') {
       entry.status = 'error';
       entry.error = snapshot.error ?? 'The scan failed.';

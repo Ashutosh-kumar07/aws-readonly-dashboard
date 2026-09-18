@@ -15,6 +15,7 @@ import type { ApiCategory } from '../aws/allowlist.js';
 import { ConfigService } from '../config/config-service.js';
 import type { AppConfig } from '../config/schema.js';
 import { mapWithConcurrency } from '../util/async.js';
+import { JobCancelledError } from '../util/errors.js';
 import { logger } from '../util/logger.js';
 import { AwsDataStore } from '../services/data-store.js';
 import { fetchBillingForProfile, type BillingData } from '../services/billing.js';
@@ -48,6 +49,11 @@ export interface SectionFetchOptions {
    * dashboard can render results while the rest of the work continues.
    */
   onPartial?: (update: SectionPartial) => void;
+  /**
+   * Checked at each unit boundary. When it returns true the fetch stops and
+   * rejects, so a cancelled scan is never cached or shown as a finished result.
+   */
+  shouldStop?: () => boolean;
 }
 
 /** An incremental section update: what is known so far, and how far along. */
@@ -150,7 +156,8 @@ export class DashboardService {
         label?: string
       ) => void
     ) => Promise<ProfileScoped<T>>,
-    onPartial?: (update: SectionPartial) => void
+    onPartial?: (update: SectionPartial) => void,
+    shouldStop?: () => boolean
   ): Promise<Array<ProfileScoped<T>>> {
     // Results are published as they land, keyed by profile so a later update
     // for the same profile replaces the earlier partial rather than duplicating it.
@@ -181,6 +188,7 @@ export class DashboardService {
     };
 
     const results = await mapWithConcurrency(selection.profiles, 3, async (profile) => {
+      if (shouldStop?.()) throw new JobCancelledError();
       const accountId = await this.accountFor(profile);
       const report = (
         partial: ProfileScoped<T>,
@@ -203,6 +211,8 @@ export class DashboardService {
         publish(`${profile} complete`);
         return result;
       } catch (error) {
+        // Cancellation aborts the whole fetch; it is not one profile failing.
+        if (error instanceof JobCancelledError) throw error;
         logger.warn('Section fetch failed for profile', {
           profile,
           reason: (error as Error).message,
@@ -251,7 +261,8 @@ export class DashboardService {
               ...(accountId ? { accountId } : {}),
               config,
             }),
-          options.onPartial
+          options.onPartial,
+          options.shouldStop
         ),
       { ...(options.force ? { force: true } : {}), variant }
     );
@@ -284,6 +295,7 @@ export class DashboardService {
               profile,
               ...(accountId ? { accountId } : {}),
               regions: selection.regions,
+              ...(options.shouldStop ? { shouldStop: options.shouldStop } : {}),
               // Each completed check publishes what has been found so far.
               onProgress: (progress) =>
                 report(
@@ -299,7 +311,8 @@ export class DashboardService {
                   progress.label
                 ),
             }),
-          options.onPartial
+          options.onPartial,
+          options.shouldStop
         ),
       { ...(options.force ? { force: true } : {}), variant }
     );
@@ -344,7 +357,8 @@ export class DashboardService {
               regions: selection.regions,
               config,
             }),
-          options.onPartial
+          options.onPartial,
+          options.shouldStop
         ),
       { ...(options.force ? { force: true } : {}), variant }
     );
@@ -376,7 +390,8 @@ export class DashboardService {
               ...(accountId ? { accountId } : {}),
               regions: selection.regions,
             }),
-          options.onPartial
+          options.onPartial,
+          options.shouldStop
         ),
       options.force ? { force: true } : {}
     );

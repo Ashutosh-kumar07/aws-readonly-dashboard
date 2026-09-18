@@ -180,6 +180,8 @@ export function createApiRouter(deps: RouteDependencies): Router {
           job.setTotal(Math.max(selection.profiles.length, 1));
           const envelope = await fetchSection(section, {
             ...options,
+            // Cancelling the job stops the scan at the next unit boundary.
+            shouldStop: () => job.cancelled,
             // The section counts its own units, so its position is adopted
             // verbatim rather than incremented here.
             onPartial: (update) => {

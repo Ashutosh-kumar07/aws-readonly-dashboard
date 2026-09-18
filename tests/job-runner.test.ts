@@ -3,6 +3,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { JobRunner } from '../src/server/job-runner.js';
+import { JobCancelledError } from '../src/util/errors.js';
 
 const settle = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 5));
 
@@ -228,5 +229,54 @@ describe('JobRunner', () => {
     await settle();
     expect(runner.get(first.id)).toBeUndefined();
     expect(runner.get(second.id)).toBeDefined();
+  });
+  it('ends a cancelled job as cancelled, keeping the partial result out of `complete`', async () => {
+    const runner = new JobRunner();
+    let release = (): void => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const unitsRun: string[] = [];
+
+    const snapshot = runner.start<string[]>({
+      section: 'security',
+      key: 'cancel-me',
+      initial: [],
+      run: async (job) => {
+        for (const unit of ['one', 'two', 'three']) {
+          // Work checks at each unit boundary, exactly as the scans do.
+          if (job.cancelled) throw new JobCancelledError();
+          unitsRun.push(unit);
+          job.advance([...unitsRun], unit);
+          await gate;
+        }
+        return [...unitsRun];
+      },
+    });
+
+    await settle();
+    expect(runner.cancel(snapshot.id)).toBe(true);
+    release();
+    await runner.wait(snapshot.id);
+
+    const finished = runner.get<string[]>(snapshot.id);
+    expect(finished?.status).toBe('cancelled');
+    // The work stopped rather than running to the end.
+    expect(unitsRun).toEqual(['one']);
+    // And the partial it had is never promoted to a complete result.
+    expect(finished?.partial).toEqual(['one']);
+  });
+
+  it('refuses to cancel a job that has already finished', async () => {
+    const runner = new JobRunner();
+    const snapshot = runner.start<string>({
+      section: 'billing',
+      key: 'done',
+      initial: '',
+      run: async () => 'finished',
+    });
+    await runner.wait(snapshot.id);
+    expect(runner.cancel(snapshot.id)).toBe(false);
+    expect(runner.get(snapshot.id)?.status).toBe('complete');
   });
 });

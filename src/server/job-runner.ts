@@ -17,6 +17,7 @@
 
 import { randomUUID } from 'node:crypto';
 
+import { JobCancelledError } from '../util/errors.js';
 import { logger } from '../util/logger.js';
 import type { SectionId } from '../services/types.js';
 
@@ -30,7 +31,7 @@ export interface JobProgress {
 export interface JobSnapshot<T> {
   id: string;
   section: SectionId;
-  status: 'running' | 'complete' | 'failed';
+  status: 'running' | 'complete' | 'failed' | 'cancelled';
   startedAt: string;
   updatedAt: string;
   finishedAt?: string;
@@ -147,6 +148,14 @@ export class JobRunner {
         );
       })
       .catch((error: unknown) => {
+        // Cancellation is an outcome, not a fault: the work stopped because it
+        // was asked to, so it is reported as cancelled and not logged as a
+        // failure. Either way the partial result is never promoted to complete.
+        if (error instanceof JobCancelledError || record.cancelled) {
+          snapshot.status = 'cancelled';
+          snapshot.error = (error as Error).message;
+          return;
+        }
         snapshot.status = 'failed';
         snapshot.error = (error as Error).message;
         logger.warn('Background job failed', {

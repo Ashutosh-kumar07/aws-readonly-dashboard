@@ -7,6 +7,7 @@
  */
 
 import { mapWithConcurrency } from '../../util/async.js';
+import { JobCancelledError } from '../../util/errors.js';
 import { GLOBAL_SCOPE } from '../../aws/regions.js';
 import type { AwsAccessLayer } from '../../aws/access-layer.js';
 import type { AppConfig } from '../../config/schema.js';
@@ -73,6 +74,8 @@ export interface RunSecurityOptions {
    * results are published as they arrive.
    */
   onProgress?: (progress: SecurityProgress) => void;
+  /** Checked before each check runs, so a cancelled scan stops making AWS calls. */
+  shouldStop?: () => boolean;
 }
 
 function toPersisted(finding: SecurityFinding): PersistedFinding {
@@ -177,6 +180,8 @@ export async function runSecurityAnalysis(
   let completed = 0;
 
   await mapWithConcurrency(units, options.concurrency ?? 6, async (unit) => {
+    // Stopping happens at a check boundary: no AWS call is started after this.
+    if (options.shouldStop?.()) throw new JobCancelledError();
     const context: CheckContext = {
       access: options.access,
       profile: options.profile,

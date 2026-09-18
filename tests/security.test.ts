@@ -18,6 +18,7 @@ import {
 import { FindingStore } from '../src/services/security/finding-store.js';
 import { fingerprint } from '../src/services/security/types.js';
 import { AwsAccessLayer } from '../src/aws/access-layer.js';
+import { JobCancelledError } from '../src/util/errors.js';
 import { defaultConfig } from '../src/config/schema.js';
 import { FakeClient, awsError, withTempDir } from './helpers.js';
 
@@ -679,6 +680,50 @@ describe('the security analyzer', () => {
       // A finding is visible before the scan finishes.
       expect(updates.some((update) => update.findings > 0)).toBe(true);
       expect(updates.at(-1)?.label).toBeTruthy();
+    });
+  });
+
+  it('stops the scan, and stops calling AWS, once the job is cancelled', async () => {
+    const client = new FakeClient({});
+    let awsCalls = 0;
+    const layer = new AwsAccessLayer({
+      clientFactory: () => {
+        awsCalls += 1;
+        return client as never;
+      },
+      maxRetries: 0,
+    });
+
+    await withTempDir(async (dir) => {
+      const store = new FindingStore(join(dir, 'findings.json'));
+      await store.load();
+
+      let stop = false;
+      let completedUnits = 0;
+
+      await expect(
+        runSecurityAnalysis({
+          access: layer,
+          config: defaultConfig(),
+          store,
+          profile: 'dev',
+          regions: ['us-east-1'],
+          // One check at a time, so "stopped at the next unit" is observable.
+          concurrency: 1,
+          shouldStop: () => stop,
+          onProgress: (progress) => {
+            completedUnits = progress.completed;
+            // Cancel as soon as the first unit has finished.
+            stop = true;
+          },
+        })
+      ).rejects.toThrow(JobCancelledError);
+
+      expect(completedUnits).toBe(1);
+      const callsAtCancellation = awsCalls;
+      // Nothing else is attempted after the cancellation is observed.
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(awsCalls).toBe(callsAtCancellation);
     });
   });
 
