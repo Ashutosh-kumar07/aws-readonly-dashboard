@@ -25,7 +25,9 @@ jobs:
     # reviewers and add `environment: npm-publish` here to gate releases behind
     # a manual approval. It is left out so a first release works with no setup.
     permissions:
-      contents: read
+      # contents: write lets a successful release create its own tag and
+      # GitHub Release, so publishing and tagging cannot drift apart.
+      contents: write
       # Required for npm trusted publishing (OIDC provenance).
       id-token: write
 
@@ -100,3 +102,37 @@ jobs:
         run: |
           sleep 15
           npm view "${{ steps.state.outputs.name }}" version
+
+      # The tag is created from the exact commit that was published, so the
+      # GitHub release and the npm provenance attestation always agree.
+      - name: Tag the release and publish release notes
+        if: ${{ steps.state.outputs.published == 'false' && !startsWith(github.ref, 'refs/tags/v') }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.state.outputs.version }}
+        run: |
+          tag="v$VERSION"
+          if git ls-remote --exit-code --tags origin "refs/tags/$tag" > /dev/null 2>&1; then
+            echo "::notice::$tag already exists; leaving it untouched."
+            exit 0
+          fi
+
+          # Release notes are the matching CHANGELOG section, so the tag, the
+          # release and the changelog cannot disagree.
+          notes_file="$(mktemp)"
+          awk -v version="$VERSION" '
+            $0 ~ "^## \\[" version "\\]" { capture = 1; next }
+            capture && /^## \[/ { exit }
+            capture { print }
+          ' CHANGELOG.md > "$notes_file"
+          if [ ! -s "$notes_file" ]; then
+            echo "Release $tag" > "$notes_file"
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$tag" -m "$tag"
+          git push origin "refs/tags/$tag"
+
+          gh release create "$tag" --title "$tag" --notes-file "$notes_file" --verify-tag
+          echo "Tagged and released $tag" >> "$GITHUB_STEP_SUMMARY"

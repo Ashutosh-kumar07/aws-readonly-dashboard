@@ -1,0 +1,42 @@
+# Dependency updates. Kept deliberately quiet: this package has no runtime
+# dependencies beyond the AWS SDK, so the useful signal is security and tooling
+# drift rather than a weekly wall of pull requests.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: '06:00'
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+    commit-message:
+      prefix: chore
+      include: scope
+    groups:
+      aws-sdk:
+        patterns:
+          - '@aws-sdk/*'
+          - '@smithy/*'
+      dev-tooling:
+        dependency-type: development
+        patterns:
+          - '*'
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: '06:00'
+    labels:
+      - dependencies
+      - ci
+    commit-message:
+      prefix: ci
+    groups:
+      actions:
+        patterns:
+          - '*'
